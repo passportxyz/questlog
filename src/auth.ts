@@ -1,0 +1,131 @@
+import jwt from 'jsonwebtoken';
+import crypto from 'node:crypto';
+import { AuthError, type JwtPayload, type UserType } from './types.js';
+
+// ── Internal State ─────────────────────────────────────────────
+
+const nonceStore: Map<string, Date> = new Map();
+
+function getSecret(): string {
+  return process.env.CV_JWT_SECRET ?? 'test-secret';
+}
+
+function getExpiryDays(): number {
+  const raw = process.env.CV_TOKEN_EXPIRY_DAYS;
+  return raw ? parseInt(raw, 10) : 90;
+}
+
+// ── JWT Functions ──────────────────────────────────────────────
+
+export function signToken(payload: {
+  sub: string;
+  name: string;
+  type: UserType;
+}): string {
+  const secret = getSecret();
+  const expiryDays = getExpiryDays();
+  return jwt.sign(
+    { sub: payload.sub, name: payload.name, type: payload.type },
+    secret,
+    { expiresIn: `${expiryDays}d` },
+  );
+}
+
+export function verifyToken(token: string): JwtPayload {
+  const secret = getSecret();
+  try {
+    const decoded = jwt.verify(token, secret) as JwtPayload;
+    return decoded;
+  } catch (err: unknown) {
+    if (err instanceof jwt.TokenExpiredError) {
+      throw new AuthError('Token has expired', 'expired_token');
+    }
+    throw new AuthError('Invalid token', 'invalid_token');
+  }
+}
+
+export function extractActorId(token: string): string {
+  const payload = verifyToken(token);
+  return payload.sub;
+}
+
+// ── Nonce Management ───────────────────────────────────────────
+
+function cleanExpiredNonces(): void {
+  const now = new Date();
+  for (const [nonce, expiresAt] of nonceStore) {
+    if (expiresAt <= now) {
+      nonceStore.delete(nonce);
+    }
+  }
+}
+
+export function generateNonce(): { nonce: string; expiresAt: Date } {
+  cleanExpiredNonces();
+  const nonce = crypto.randomBytes(32).toString('hex');
+  const expiresAt = new Date(Date.now() + 60_000); // 60s TTL
+  nonceStore.set(nonce, expiresAt);
+  return { nonce, expiresAt };
+}
+
+export function consumeNonce(nonce: string): boolean {
+  cleanExpiredNonces();
+  const expiresAt = nonceStore.get(nonce);
+  if (!expiresAt) return false;
+  if (expiresAt <= new Date()) {
+    nonceStore.delete(nonce);
+    return false;
+  }
+  nonceStore.delete(nonce);
+  return true;
+}
+
+// ── SSH Signature Verification ─────────────────────────────────
+
+/**
+ * Parse an SSH ed25519 public key string ("ssh-ed25519 AAAA...") into
+ * a raw 32-byte ed25519 public key buffer.
+ */
+function parseSSHEd25519PublicKey(sshKey: string): Buffer {
+  const parts = sshKey.trim().split(/\s+/);
+  if (parts[0] !== 'ssh-ed25519') {
+    throw new Error('Not an ed25519 SSH public key');
+  }
+  const decoded = Buffer.from(parts[1], 'base64');
+  // SSH wire format: uint32 length + "ssh-ed25519" + uint32 length + raw key bytes
+  let offset = 0;
+  const typeLen = decoded.readUInt32BE(offset);
+  offset += 4;
+  const typeStr = decoded.subarray(offset, offset + typeLen).toString('utf8');
+  offset += typeLen;
+  if (typeStr !== 'ssh-ed25519') {
+    throw new Error('Unexpected key type in SSH blob');
+  }
+  const keyLen = decoded.readUInt32BE(offset);
+  offset += 4;
+  const rawKey = decoded.subarray(offset, offset + keyLen);
+  return Buffer.from(rawKey);
+}
+
+export function verifySignature(
+  publicKey: string,
+  nonce: string,
+  signature: string,
+): boolean {
+  try {
+    const rawKeyBytes = parseSSHEd25519PublicKey(publicKey);
+    const keyObject = crypto.createPublicKey({
+      key: Buffer.concat([
+        // DER prefix for ed25519 public key (from RFC 8410)
+        Buffer.from('302a300506032b6570032100', 'hex'),
+        rawKeyBytes,
+      ]),
+      format: 'der',
+      type: 'spki',
+    });
+    const sigBuffer = Buffer.from(signature, 'base64');
+    return crypto.verify(null, Buffer.from(nonce, 'utf8'), keyObject, sigBuffer);
+  } catch {
+    return false;
+  }
+}

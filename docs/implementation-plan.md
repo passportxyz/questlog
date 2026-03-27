@@ -15,7 +15,7 @@ An event-sourced task management system for human/agent collaboration. This docu
 There is no REST API. The MCP server is the only way to talk to Clairvoyant. The CLI is an MCP client — it connects to the MCP server and calls tools, same as any agent. This means:
 
 - One server implementation, one set of tool handlers
-- Auth happens at the MCP connection level
+- Auth uses standard bearer tokens (JWT) — env var for stdio, header for HTTP
 - Every consumer — agents, CLI, future integrations — speaks MCP
 - If a REST API is ever needed, it can be added as a thin layer on top of the same core logic
 
@@ -50,7 +50,7 @@ clairvoyant/
 │   ├── projection.ts          -- applyEvent() — event → task state changes
 │   ├── webhooks.ts            -- webhook dispatch logic
 │   ├── staleness.ts           -- periodic check for unowned tasks
-│   ├── auth.ts                -- SSH key verification at MCP connection level
+│   ├── auth.ts                -- JWT verification, token issuance, SSH challenge/response
 │   └── types.ts               -- shared TypeScript types
 ├── migrations/
 │   ├── 001_create_users.sql
@@ -407,38 +407,124 @@ Approve a pending user. Requires `is_admin = true`.
 }
 ```
 
-## Auth — SSH Keys at MCP Connection Level
+## Auth — Token-Based, SSH Keys for Identity
 
-Auth happens when an MCP client connects, not per-tool-call. This is simpler than per-request HTTP auth.
+Auth uses standard bearer tokens that fit how MCP actually works. SSH keys are the identity layer — the CLI uses them to obtain tokens, and tokens are what MCP clients pass to the server.
+
+### Why not SSH challenge/response at connection time?
+
+The MCP spec doesn't support custom auth handshakes. Claude Code agents run in sandboxes that can't read `~/.ssh/`. Every real MCP server today uses either environment variables (stdio) or bearer tokens (HTTP). We follow that pattern.
 
 ### How it works
 
-1. Client connects to the MCP server over stdio or SSE
-2. Client calls a special `authenticate` tool (or auth is part of the connection handshake) with:
-   - `user_id` — who they claim to be
-   - `challenge_response` — signature of a server-provided nonce using their SSH private key
-3. Server verifies against the user's registered public key
-4. If valid, the connection is authenticated — all subsequent tool calls use this identity
-5. If the user is `pending`, auth succeeds but non-registration tools return an error
+1. **CLI generates an ed25519 keypair** during `cv init` — stored at `~/.cv/id_ed25519`
+2. **CLI registers the public key** via `register_user` (unauthenticated tool)
+3. **CLI obtains a token** via `authenticate` tool — signs a server nonce with the private key, gets back a JWT
+4. **Token is passed to MCP** via the standard mechanisms:
+   - **stdio transport:** `CV_TOKEN` environment variable
+   - **HTTP transport:** `Authorization: Bearer <token>` header
+5. **Server validates the token** on every tool call, extracts `actor_id`
+6. Tokens are long-lived (configurable, default 90 days) with refresh
 
-### Connection auth flow
+### Token issuance flow
 
 ```
-Client → Server:  connect
-Server → Client:  auth_challenge { nonce: "random-string" }
-Client → Server:  authenticate { user_id: "...", signature: sign(nonce, private_key) }
-Server → Client:  auth_success { user: User }
+# First time setup (CLI handles this)
+cv init                        → generates ~/.cv/id_ed25519
+cv register --name "Lucian"    → calls register_user(name, public_key)
+                                 admin approves (or auto-approve for agents)
+cv auth login                  → calls authenticate tool:
+
+Client → Server:  authenticate { user_id, action: "request_challenge" }
+Server → Client:  { nonce: "random-bytes-hex" }
+Client → Server:  authenticate { user_id, nonce, signature: sign(nonce, private_key) }
+Server → Client:  { token: "eyJhbG...", expires_at: "..." }
+
+# Token stored at ~/.cv/token
 ```
 
-The CLI handles this transparently. The MCP SDK on the agent side handles it via config.
+### How agents connect
+
+Agents never touch SSH keys. Their parent (human) provisions them:
+
+```bash
+# Human registers an agent identity
+cv agent create --name "my-build-bot"
+# → Generates keypair, registers with parent_id = human's user_id
+# → Agent is auto-approved (parent is trusted)
+# → Returns a token for the agent
+
+# Agent's MCP config (e.g. .mcp.json or claude mcp add)
+claude mcp add --transport stdio \
+  --env CV_TOKEN=eyJhbG... \
+  clairvoyant -- npx @clairvoyant/mcp
+
+# Or for HTTP transport
+claude mcp add --transport http \
+  --header "Authorization: Bearer eyJhbG..." \
+  clairvoyant https://cv.example.com/mcp
+```
+
+### Token format
+
+JWTs signed with a server-side secret (HS256 for v1, RS256 if we need distributed verification later).
+
+```typescript
+// JWT payload
+{
+  sub: string;        // user_id (uuid)
+  name: string;       // user name
+  type: "human" | "agent";
+  iat: number;        // issued at
+  exp: number;        // expiry
+}
+```
+
+### MCP server auth middleware
+
+Every tool call except `register_user` and `authenticate` requires a valid token. The server extracts the token from:
+
+- **stdio:** `CV_TOKEN` env var, read once at connection startup
+- **HTTP:** `Authorization: Bearer <token>` header on each request
+
+```typescript
+// src/auth.ts
+function extractActorId(context: McpContext): string {
+  const token = context.token; // from env var or header
+  const payload = verifyJwt(token, SERVER_SECRET);
+  if (!payload) throw new AuthError("invalid_token");
+  return payload.sub;
+}
+```
+
+### The `authenticate` tool
+
+This is the only tool that uses SSH key crypto. It exists solely for the CLI's `cv auth login` flow.
+
+```typescript
+// Input (step 1 — request challenge)
+{ user_id: string; action: "request_challenge" }
+// Result
+{ nonce: string; expires_at: string; }  // nonce valid for 60 seconds
+
+// Input (step 2 — verify signature, issue token)
+{ user_id: string; action: "verify"; nonce: string; signature: string; }
+// Result
+{ token: string; expires_at: string; user: User; }
+```
+
+The nonce is stored server-side (in-memory with TTL, or a `nonces` table). The signature is verified against the user's registered `public_key`.
 
 ### Key format
 
-Standard SSH ed25519 keys. Node's `crypto` module can verify ed25519 signatures natively.
+Standard SSH ed25519 keys. Node's `crypto` module verifies ed25519 signatures natively.
 
 ### Unauthenticated tools
 
-`register_user` is callable without authentication (it's how new users register their key). All other tools require an authenticated connection.
+- `register_user` — how new users register their public key
+- `authenticate` — how the CLI exchanges an SSH signature for a token
+
+All other tools require a valid token.
 
 ## Webhooks — Dispatch
 
@@ -476,11 +562,22 @@ When a `completed` or `cancelled` event is processed:
 
 ## CLI (`cv`)
 
-The CLI is an MCP client — it connects to the Clairvoyant MCP server and calls tools. It handles SSH key management and auth transparently.
+The CLI is an MCP client — it connects to the Clairvoyant MCP server and calls tools. It handles SSH key management, token issuance, and auth transparently.
+
+### Auth & setup commands
 
 ```bash
-cv init                          # generate SSH keypair
-cv auth register                 # register public key with server
+cv init                          # generate ed25519 keypair at ~/.cv/id_ed25519
+cv register --name "Lucian"      # register public key with server (calls register_user)
+cv auth login                    # SSH challenge/response → gets JWT, stores at ~/.cv/token
+cv auth status                   # show current user, token expiry
+cv agent create --name "bot"     # register an agent under your identity, returns its token
+cv mcp-config                    # print the MCP config snippet for agents to use
+```
+
+### Task commands
+
+```bash
 cv add "Fix the login bug"       # calls create_task
 cv add "My thing" --owner me     # calls create_task with owner_id
 cv list --mine                   # calls list_tasks with owner_id=me
@@ -496,7 +593,36 @@ cv admin pending                 # calls admin_pending
 cv admin approve <user_id>       # calls admin_approve
 ```
 
-The CLI stores the keypair at `~/.cv/id_ed25519` and the server URL at `~/.cv/config`.
+### Config files
+
+```
+~/.cv/
+├── id_ed25519       # private key
+├── id_ed25519.pub   # public key
+├── token            # current JWT
+└── config           # server URL, user_id
+```
+
+### `cv mcp-config`
+
+Outputs a ready-to-paste MCP config for agents:
+
+```json
+{
+  "mcpServers": {
+    "clairvoyant": {
+      "command": "npx",
+      "args": ["@clairvoyant/mcp"],
+      "env": {
+        "CV_TOKEN": "eyJhbG...",
+        "CV_SERVER_URL": "https://cv.example.com"
+      }
+    }
+  }
+}
+```
+
+This is what goes into `.mcp.json` (project-scoped) or gets added via `claude mcp add`.
 
 ## SKILL.md
 
@@ -515,9 +641,10 @@ This document will be written during implementation once the tools are stable.
 - TypeScript / Node.js
 - PostgreSQL (with migrations)
 - MCP SDK (`@modelcontextprotocol/sdk`) — server and client
-- SSH keypair auth (ed25519, Node `crypto` module)
+- SSH keypair auth (ed25519, Node `crypto` module) for identity
+- JWT (jsonwebtoken) for bearer tokens
 
-No Express, no HTTP framework. The MCP server runs over stdio (for local agents) or SSE (for remote connections).
+No Express, no HTTP framework. The MCP server runs over stdio (for local agents) or streamable HTTP (for remote connections).
 
 ## Testing Strategy
 
@@ -560,7 +687,7 @@ export async function withTransaction(fn: (client: PoolClient) => Promise<void>)
 2. **Event insertion + projection** — insert event via tool handler, verify tasks row updated correctly in same transaction.
 3. **Optimistic locking** — two concurrent claims, only one succeeds.
 4. **Registration flow** — register → pending, admin approve → active, agent creation by active human → immediate active.
-5. **Auth** — valid signature passes, expired nonce rejected, unknown user rejected, pending user rejected.
+5. **Auth** — valid JWT accepted, expired JWT rejected, authenticate tool: valid SSH signature → token issued, expired nonce rejected, unknown user rejected, pending user can register but not use other tools.
 6. **Task lifecycle** — full flow: create → claim → progress → handoff → claim → complete.
 7. **Dependencies** — block B on A → complete A → B gets unblocked event.
 8. **Idempotency** — same idempotency_key twice → same response, no duplicate event.
@@ -573,9 +700,11 @@ export async function withTransaction(fn: (client: PoolClient) => Promise<void>)
 # .env
 DATABASE_URL=postgresql://user:pass@localhost:5432/clairvoyant
 TEST_DATABASE_URL=postgresql://user:pass@localhost:5432/clairvoyant_test
+CV_JWT_SECRET=your-secret-here     # signs/verifies tokens
+CV_TOKEN_EXPIRY_DAYS=90            # token lifetime
 CV_STALENESS_INTERVAL_MS=3600000   # 1 hour
-CV_TRANSPORT=stdio                 # or sse
-CV_SSE_PORT=3000                   # only if transport=sse
+CV_TRANSPORT=stdio                 # or http
+CV_HTTP_PORT=3000                  # only if transport=http
 ```
 
 ### docker-compose.yml
@@ -606,8 +735,8 @@ Test DB is created by the test setup script: `CREATE DATABASE clairvoyant_test`.
 3. **Projection** — `applyEvent()` with unit tests
 4. **Core tools** — create_task, list_tasks, get_task, append_event, claim_task — with integration tests calling handlers directly
 5. **MCP server wiring** — register tools, stdio/SSE transport
-6. **Auth** — connection-level SSH challenge/response + tests
-7. **User management** — register_user, admin tools + tests
+6. **Auth** — JWT verification middleware, `authenticate` tool (nonce + SSH signature → token) + tests
+7. **User management** — register_user, admin tools, `cv agent create` + tests
 8. **Webhooks** — registration, dispatch, signature + tests
 9. **Staleness** — periodic check + tests
 10. **Dependency auto-unblock** — completion triggers unblock + tests

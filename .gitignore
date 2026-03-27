@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.env
+coverage/
+
+# Mim - Transient/local state files
+.claude/knowledge/unresolved.md
+.claude/knowledge/mim.log
