@@ -16,6 +16,8 @@ Clairvoyant makes that handoff loop explicit, low-friction, and visible. Over ti
 
 There are no edits. Every action is an append-only event. The current state of a task is derived by replaying its event history. This gives you full audit trails, clean progress tracking, and the ability to reconstruct any task's journey from creation to completion.
 
+Every field change is an event — when a bot sets priority and a human overrides it, both are visible in the history. You always know who decided what and when.
+
 ### Data Model
 
 **tasks** (materialized current state — derived from events)
@@ -23,12 +25,12 @@ There are no edits. Every action is an append-only event. The current state of a
 id              uuid
 title           text
 status          pending | active | blocked | done | cancelled
-owner_id        uuid        -- who has the ball right now
-creator_id      uuid        -- who created it, defaults as responsible human
+owner_id        uuid?       -- who has the ball (null = unowned, available for pickup)
+creator_id      uuid        -- who created it
 parent_task_id  uuid?       -- for subtask lineage
-priority        text?
-due_date        timestamp?
-tags            text[]
+priority        text?       -- set by triage bot or human, not required at creation
+due_date        timestamp?  -- only for real deadlines, not required at creation
+tags            text[]      -- inferred by triage bot or set explicitly
 created_at      timestamp
 updated_at      timestamp
 ```
@@ -40,7 +42,7 @@ task_id         uuid
 event_type      created | note | progress | handoff | blocked | completed | cancelled
 actor_id        uuid        -- who did this (human or agent)
 body            text        -- the meat: description, progress update, context
-metadata        jsonb       -- structured data (gap descriptions, handoff reasons, etc.)
+metadata        jsonb       -- structured data (gap descriptions, handoff reasons, field changes, etc.)
 created_at      timestamp
 ```
 
@@ -56,12 +58,12 @@ parent_id       uuid?       -- agents link to their parent human
 created_at      timestamp
 ```
 
-### How It Works
+### Task Lifecycle
 
-1. **Human creates a task** — first event's body is the description, as rich as needed
-2. **Triage bot picks it up** — researches, appends progress events with context/game plans, hands back to owner
-3. **Agent claims and works a task** — appends progress events as it goes
-4. **Agent gets stuck** — `blocked` event with handoff to human, body explains why and what's needed
+1. **Human creates a task** — rich description in the first event's body. No owner by default (goes to the triage pool). Use `--owner` to claim it immediately if you don't need triage.
+2. **Triage bot picks up unowned tasks** — evaluates the task. Can it just do it? Does it, marks done. Need research? Enriches with context, sets priority/tags, assigns to the right person or agent. Need a human? Assigns to creator or whoever fits.
+3. **Agent works a task** — appends progress events as it goes
+4. **Agent gets stuck** — `blocked` event with handoff to a human, body explains why and what's needed
 5. **Human unblocks** — does the thing, provides info, grants access, hands back or completes
 6. **Subtasks** — agent spawns child tasks with `parent_task_id` when work is genuinely separate
 7. **Capability gaps** — surface as blocked events. Over time, the org closes gaps and more tasks go fully automated
@@ -88,8 +90,10 @@ Thin wrapper around the same API for non-MCP contexts and scripting:
 ```bash
 cv init                          # generate or link SSH keypair
 cv auth register                 # register public key with server
-cv add "Fix the login bug"       # create a task
+cv add "Fix the login bug"       # create a task (unowned, goes to triage pool)
+cv add "My thing" --owner me     # create and claim it yourself
 cv list --mine                   # what's on my plate
+cv list --unowned                # what's in the triage pool
 cv claim 47                      # pick up a task
 cv progress 47 "Found the root cause, working on fix"
 cv handoff 47 --to lucian --context "Need DB credentials"
@@ -111,7 +115,7 @@ Future: encrypt task bodies with recipient's public key for private tasks.
 
 ### The Triage Bot
 
-Not part of the core product — it's a pattern. A triage bot is just another registered user that queries for untriaged tasks, does research/prep, and hands them back enriched. Deploy it alongside Clairvoyant for the "it just works" experience. Per-user agents are the optional power-user layer.
+Not part of the core product — it's a pattern. A triage bot is just another registered user that queries for unowned tasks, evaluates them, and either completes them directly, enriches them with research and game plans, or assigns them to the right person/agent. Deploy it alongside Clairvoyant for the "it just works" experience. Per-user agents are the optional power-user layer.
 
 ## The Automation Spectrum
 
