@@ -1,20 +1,25 @@
 # The Clairvoyant
 
 ```
-you:    Fix the auth redirect bug on staging
-  cv:   Got it. I'll take a look.
+me:       What did you get done last night?
 
-  cv:   Found it — the callback URL isn't URL-encoded when there's a
-        query string. I have a fix. Want me to push it or hand it off?
-you:    Push it.
-  cv:   Done. PR #214 is up, tests passing.
+claude:   Morning! I finished the webhook retry logic — it backs off
+          exponentially now and dead-letters after 5 failures. PR is up
+          and tests are green. I got stuck on the auth migration though.
+          The old session tokens don't have the fields the new middleware
+          expects, so I can't do a clean swap. Want me to create a
+          follow-up task to figure out a migration path?
 
-you:    What's on my plate?
-  cv:   3 tasks. The billing migration is blocked — needs a DB credential
-        from Jake. The other two are in progress, both on track.
+me:       Yeah go ahead, but hand that one to me. I'll sort it out.
+          I also need to get the API docs updated before Friday and
+          figure out the meeting with the Acme team.
 
-you:    Assign the docs update to the intern bot
-  cv:   Handed off. It'll start working on it and check back if it gets stuck.
+claude:   Created the auth migration task and assigned it to you.
+          I knocked out the API docs — updated the endpoint reference
+          and added the new webhook examples, PR #218.
+          For the Acme meeting, I emailed their PM to coordinate
+          schedules and created a task to prep the agenda once
+          we have a date.
 ```
 
 The Clairvoyant is a task management system where humans and AI agents pass work back and forth. Every task has a ball, and it's always in someone's court.
