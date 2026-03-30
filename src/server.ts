@@ -19,7 +19,7 @@ import { createTask } from './tools/tasks.js';
 import { getTask } from './tools/tasks.js';
 import { appendEvent } from './tools/events.js';
 import { claimTask } from './tools/events.js';
-import { registerUser, getUser, authenticate } from './tools/users.js';
+import { registerUser, getUser, listUsers, authenticate } from './tools/users.js';
 import { registerWebhook } from './tools/webhooks.js';
 import { listTasks } from './db/queries.js';
 
@@ -241,10 +241,11 @@ function createServer(): McpServer {
 
   server.tool(
     'register_user',
-    'Register a new user. No authentication required.',
+    'Register a new user. Type "agent" requires a public_key for auth. Type "human" is a task assignee only. No authentication required.',
     {
       name: z.string(),
-      public_key: z.string(),
+      type: z.enum(['human', 'agent']).optional().describe('Defaults to "agent"'),
+      public_key: z.string().optional().describe('Required for agent users'),
     },
     withClientNoAuth(async (client, params) => {
       return registerUser(client, params);
@@ -261,6 +262,19 @@ function createServer(): McpServer {
     },
     withClient(async (client, actorId, params) => {
       return getUser(client, actorId, params);
+    }),
+  );
+
+  // ── list_users ───────────────────────────────────────────────────
+
+  server.tool(
+    'list_users',
+    'List users, optionally filtered by type (human or agent)',
+    {
+      type: z.enum(['human', 'agent']).optional(),
+    },
+    withClient(async (client, actorId, params) => {
+      return listUsers(client, actorId, params);
     }),
   );
 

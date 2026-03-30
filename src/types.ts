@@ -16,10 +16,13 @@ export type TaskStatus = 'open' | 'done' | 'cancelled';
 
 // ── Core Entities ───────────────────────────────────────────────
 
+export type UserType = 'human' | 'agent';
+
 export interface User {
   id: string;
   name: string;
-  public_key: string;
+  type: UserType;
+  public_key: string | null;
   created_at: Date;
 }
 

@@ -26,16 +26,34 @@ export async function insertUser(
   client: pg.PoolClient,
   params: {
     name: string;
-    public_key: string;
+    type: 'human' | 'agent';
+    public_key?: string;
   },
 ): Promise<User> {
   const { rows } = await client.query<User>(
-    `INSERT INTO users (name, public_key)
-     VALUES ($1, $2)
+    `INSERT INTO users (name, type, public_key)
+     VALUES ($1, $2, $3)
      RETURNING *`,
-    [params.name, params.public_key],
+    [params.name, params.type, params.public_key ?? null],
   );
   return rows[0];
+}
+
+export async function listUsers(
+  client: pg.PoolClient,
+  filters?: { type?: 'human' | 'agent' },
+): Promise<User[]> {
+  if (filters?.type) {
+    const { rows } = await client.query<User>(
+      'SELECT * FROM users WHERE type = $1 ORDER BY created_at ASC',
+      [filters.type],
+    );
+    return rows;
+  }
+  const { rows } = await client.query<User>(
+    'SELECT * FROM users ORDER BY created_at ASC',
+  );
+  return rows;
 }
 
 export async function getUserById(

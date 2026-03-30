@@ -3,6 +3,7 @@ import {
   getUserById,
   getUserByPublicKey,
   insertUser,
+  listUsers as listUsersQuery,
 } from '../db/queries.js';
 import {
   generateNonce,
@@ -10,26 +11,36 @@ import {
   verifySignature,
   signToken,
 } from '../auth.js';
-import type { User } from '../types.js';
+import type { User, UserType } from '../types.js';
 
 // ── registerUser (unauthenticated) ────────────────────────────────
 
 export interface RegisterUserInput {
   name: string;
-  public_key: string;
+  type?: UserType;
+  public_key?: string;
 }
 
 export async function registerUser(
   client: pg.PoolClient,
   input: RegisterUserInput,
 ): Promise<{ user: User }> {
-  const existing = await getUserByPublicKey(client, input.public_key);
-  if (existing) {
-    throw new Error('A user with this public key already exists');
+  const type = input.type ?? 'agent';
+
+  if (type === 'agent' && !input.public_key) {
+    throw new Error('Agents must provide a public_key for authentication');
+  }
+
+  if (input.public_key) {
+    const existing = await getUserByPublicKey(client, input.public_key);
+    if (existing) {
+      throw new Error('A user with this public key already exists');
+    }
   }
 
   const user = await insertUser(client, {
     name: input.name,
+    type,
     public_key: input.public_key,
   });
 
@@ -46,6 +57,17 @@ export async function getUser(
   const user = await getUserById(client, input.user_id);
   if (!user) throw new Error(`User not found: ${input.user_id}`);
   return { user };
+}
+
+// ── listUsers ─────────────────────────────────────────────────────
+
+export async function listUsers(
+  client: pg.PoolClient,
+  _actorId: string,
+  input: { type?: UserType },
+): Promise<{ users: User[] }> {
+  const users = await listUsersQuery(client, input.type ? { type: input.type } : undefined);
+  return { users };
 }
 
 // ── authenticate (unauthenticated) ────────────────────────────────
@@ -82,6 +104,10 @@ export async function authenticate(
   const user = await getUserById(client, input.user_id);
   if (!user) {
     throw new Error(`User not found: ${input.user_id}`);
+  }
+
+  if (!user.public_key) {
+    throw new Error('This user has no public key registered');
   }
 
   const sigValid = verifySignature(user.public_key, input.nonce, input.signature);
