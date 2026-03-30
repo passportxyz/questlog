@@ -21,6 +21,9 @@ COPY --from=builder /app/dist/ dist/
 COPY migrations/ migrations/
 COPY SKILL.md ./
 
+RUN addgroup -S app && adduser -S app -G app
+USER app
+
 ENV PORT=3000
 EXPOSE 3000
 

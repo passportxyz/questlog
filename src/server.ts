@@ -139,163 +139,169 @@ function processSideEffectsFromResult(result: unknown): void {
 }
 
 // ---------------------------------------------------------------------------
-// Server
+// Server factory — one McpServer per session (SDK requires 1:1 server:transport)
 // ---------------------------------------------------------------------------
 
-const server = new McpServer(
-  { name: 'clairvoyant', version: '0.1.0' },
-  { capabilities: { tools: {} } },
-);
+function createServer(): McpServer {
+  const server = new McpServer(
+    { name: 'clairvoyant', version: '0.1.0' },
+    { capabilities: { tools: {} } },
+  );
 
-// ── create_task ──────────────────────────────────────────────────
+  // ── create_task ──────────────────────────────────────────────────
 
-server.tool(
-  'create_task',
-  'Create a new task with title, body, and optional metadata',
-  {
-    title: z.string(),
-    body: z.string(),
-    owner_id: z.string().optional(),
-    parent_task_id: z.string().optional(),
-    priority: z.number().optional(),
-    due_date: z.string().optional().describe('ISO 8601 date string'),
-    tags: z.array(z.string()).optional(),
-    idempotency_key: z.string(),
-  },
-  withClient(async (client, actorId, params) => {
-    const input = {
-      ...params,
-      due_date: params.due_date ? new Date(params.due_date) : undefined,
-    };
-    return createTask(client, actorId, input);
-  }, { write: true }),
-);
+  server.tool(
+    'create_task',
+    'Create a new task with title, body, and optional metadata',
+    {
+      title: z.string(),
+      body: z.string(),
+      owner_id: z.string().optional(),
+      parent_task_id: z.string().optional(),
+      priority: z.number().optional(),
+      due_date: z.string().optional().describe('ISO 8601 date string'),
+      tags: z.array(z.string()).optional(),
+      idempotency_key: z.string(),
+    },
+    withClient(async (client, actorId, params) => {
+      const input = {
+        ...params,
+        due_date: params.due_date ? new Date(params.due_date) : undefined,
+      };
+      return createTask(client, actorId, input);
+    }, { write: true }),
+  );
 
-// ── list_tasks ───────────────────────────────────────────────────
+  // ── list_tasks ───────────────────────────────────────────────────
 
-server.tool(
-  'list_tasks',
-  'List tasks with optional filters for status, owner, tags, parent, creator',
-  {
-    status: z.enum(['open', 'done', 'cancelled']).optional(),
-    owner_id: z.string().nullable().optional(),
-    tags: z.array(z.string()).optional(),
-    parent_task_id: z.string().optional(),
-    creator_id: z.string().optional(),
-    cursor: z.string().optional(),
-  },
-  withClient(async (client, _actorId, params) => {
-    return listTasks(client, params);
-  }),
-);
+  server.tool(
+    'list_tasks',
+    'List tasks with optional filters for status, owner, tags, parent, creator',
+    {
+      status: z.enum(['open', 'done', 'cancelled']).optional(),
+      owner_id: z.string().nullable().optional(),
+      tags: z.array(z.string()).optional(),
+      parent_task_id: z.string().optional(),
+      creator_id: z.string().optional(),
+      cursor: z.string().optional(),
+    },
+    withClient(async (client, _actorId, params) => {
+      return listTasks(client, params);
+    }),
+  );
 
-// ── get_task ─────────────────────────────────────────────────────
+  // ── get_task ─────────────────────────────────────────────────────
 
-server.tool(
-  'get_task',
-  'Get a task by ID, including its full event history',
-  {
-    task_id: z.string(),
-  },
-  withClient(async (client, actorId, params) => {
-    return getTask(client, actorId, params);
-  }),
-);
+  server.tool(
+    'get_task',
+    'Get a task by ID, including its full event history',
+    {
+      task_id: z.string(),
+    },
+    withClient(async (client, actorId, params) => {
+      return getTask(client, actorId, params);
+    }),
+  );
 
-// ── append_event ─────────────────────────────────────────────────
+  // ── append_event ─────────────────────────────────────────────────
 
-server.tool(
-  'append_event',
-  'Append an event to a task (note, progress, handoff, field_changed, completed, cancelled, etc.)',
-  {
-    task_id: z.string(),
-    event_type: z.enum([
-      'created', 'note', 'progress', 'handoff', 'claimed',
-      'blocked', 'unblocked', 'field_changed', 'completed', 'cancelled',
-    ]),
-    body: z.string().optional(),
-    metadata: z.record(z.string(), z.unknown()).optional(),
-    idempotency_key: z.string(),
-  },
-  withClient(async (client, actorId, params) => {
-    return appendEvent(client, actorId, params);
-  }, { write: true }),
-);
+  server.tool(
+    'append_event',
+    'Append an event to a task (note, progress, handoff, field_changed, completed, cancelled, etc.)',
+    {
+      task_id: z.string(),
+      event_type: z.enum([
+        'created', 'note', 'progress', 'handoff', 'claimed',
+        'blocked', 'unblocked', 'field_changed', 'completed', 'cancelled',
+      ]),
+      body: z.string().optional(),
+      metadata: z.record(z.string(), z.unknown()).optional(),
+      idempotency_key: z.string(),
+    },
+    withClient(async (client, actorId, params) => {
+      return appendEvent(client, actorId, params);
+    }, { write: true }),
+  );
 
-// ── claim_task ───────────────────────────────────────────────────
+  // ── claim_task ───────────────────────────────────────────────────
 
-server.tool(
-  'claim_task',
-  'Claim an unowned task — sets the caller as the owner',
-  {
-    task_id: z.string(),
-    idempotency_key: z.string(),
-  },
-  withClient(async (client, actorId, params) => {
-    return claimTask(client, actorId, params);
-  }, { write: true }),
-);
+  server.tool(
+    'claim_task',
+    'Claim an unowned task — sets the caller as the owner',
+    {
+      task_id: z.string(),
+      idempotency_key: z.string(),
+    },
+    withClient(async (client, actorId, params) => {
+      return claimTask(client, actorId, params);
+    }, { write: true }),
+  );
 
-// ── register_user (no auth) ──────────────────────────────────────
+  // ── register_user (no auth) ──────────────────────────────────────
 
-server.tool(
-  'register_user',
-  'Register a new user. No authentication required.',
-  {
-    name: z.string(),
-    public_key: z.string(),
-  },
-  withClientNoAuth(async (client, params) => {
-    return registerUser(client, params);
-  }),
-);
+  server.tool(
+    'register_user',
+    'Register a new user. No authentication required.',
+    {
+      name: z.string(),
+      public_key: z.string(),
+    },
+    withClientNoAuth(async (client, params) => {
+      return registerUser(client, params);
+    }),
+  );
 
-// ── get_user ─────────────────────────────────────────────────────
+  // ── get_user ─────────────────────────────────────────────────────
 
-server.tool(
-  'get_user',
-  'Get a user by ID',
-  {
-    user_id: z.string(),
-  },
-  withClient(async (client, actorId, params) => {
-    return getUser(client, actorId, params);
-  }),
-);
+  server.tool(
+    'get_user',
+    'Get a user by ID',
+    {
+      user_id: z.string(),
+    },
+    withClient(async (client, actorId, params) => {
+      return getUser(client, actorId, params);
+    }),
+  );
 
-// ── authenticate (no auth) ───────────────────────────────────────
+  // ── authenticate (no auth) ───────────────────────────────────────
 
-server.tool(
-  'authenticate',
-  'Authenticate: request a challenge nonce, or verify a signature to get a JWT. No authentication required.',
-  {
-    user_id: z.string(),
-    action: z.enum(['request_challenge', 'verify']),
-    nonce: z.string().optional(),
-    signature: z.string().optional(),
-  },
-  withClientNoAuth(async (client, params) => {
-    return authenticate(client, params);
-  }),
-);
+  server.tool(
+    'authenticate',
+    'Authenticate: request a challenge nonce, or verify a signature to get a JWT. No authentication required.',
+    {
+      user_id: z.string(),
+      action: z.enum(['request_challenge', 'verify']),
+      nonce: z.string().optional(),
+      signature: z.string().optional(),
+    },
+    withClientNoAuth(async (client, params) => {
+      return authenticate(client, params);
+    }),
+  );
 
-// ── register_webhook ─────────────────────────────────────────────
+  // ── register_webhook ─────────────────────────────────────────────
 
-server.tool(
-  'register_webhook',
-  'Register a webhook URL to receive event notifications',
-  {
-    url: z.string().url(),
-    events: z.array(z.string()),
-  },
-  withClient(async (client, actorId, params) => {
-    return registerWebhook(client, actorId, params);
-  }),
-);
+  server.tool(
+    'register_webhook',
+    'Register a webhook URL to receive event notifications',
+    {
+      url: z.string().url(),
+      events: z.array(z.string()),
+    },
+    withClient(async (client, actorId, params) => {
+      return registerWebhook(client, actorId, params);
+    }),
+  );
+
+  return server;
+}
 
 // ---------------------------------------------------------------------------
 // HTTP Transport & startup
 // ---------------------------------------------------------------------------
+
+const MAX_SESSIONS = 100;
 
 async function main() {
   const pool = getPool();
@@ -334,47 +340,80 @@ async function main() {
     next();
   });
 
-  // Session management for stateful MCP connections
-  const transports = new Map<string, StreamableHTTPServerTransport>();
+  // Session management — one McpServer + transport per session
+  const sessions = new Map<string, { server: McpServer; transport: StreamableHTTPServerTransport }>();
 
   app.all('/mcp', async (req: Request, res: Response) => {
-    const sessionId = req.headers['mcp-session-id'] as string | undefined;
+    try {
+      const sessionId = req.headers['mcp-session-id'] as string | undefined;
 
-    if (sessionId && transports.has(sessionId)) {
-      // Existing session
-      const transport = transports.get(sessionId)!;
-      await transport.handleRequest(req, res, req.body);
-    } else if (!sessionId && req.method === 'POST') {
-      // New session — create transport, connect to server
-      const transport = new StreamableHTTPServerTransport({
-        sessionIdGenerator: () => crypto.randomUUID(),
-      });
-      transport.onclose = () => {
-        if (transport.sessionId) transports.delete(transport.sessionId);
-      };
-      await server.connect(transport);
-      if (transport.sessionId) transports.set(transport.sessionId, transport);
-      await transport.handleRequest(req, res, req.body);
-    } else {
-      res.status(400).json({ error: 'Bad Request: missing or invalid session' });
+      // DELETE — terminate session per MCP spec
+      if (req.method === 'DELETE' && sessionId) {
+        const session = sessions.get(sessionId);
+        if (session) {
+          await session.transport.close();
+          await session.server.close();
+          sessions.delete(sessionId);
+          res.status(204).end();
+        } else {
+          res.status(404).json({ error: 'Session not found' });
+        }
+        return;
+      }
+
+      if (sessionId && sessions.has(sessionId)) {
+        // Existing session
+        const session = sessions.get(sessionId)!;
+        await session.transport.handleRequest(req, res, req.body);
+      } else if (sessionId && !sessions.has(sessionId)) {
+        // Stale/unknown session ID
+        res.status(404).json({ error: 'Session not found — re-initialize' });
+      } else if (!sessionId && req.method === 'POST') {
+        // New session — enforce cap to prevent memory exhaustion
+        if (sessions.size >= MAX_SESSIONS) {
+          res.status(503).json({ error: 'Too many active sessions' });
+          return;
+        }
+
+        const server = createServer();
+        const transport = new StreamableHTTPServerTransport({
+          sessionIdGenerator: () => crypto.randomUUID(),
+        });
+        transport.onclose = () => {
+          if (transport.sessionId) sessions.delete(transport.sessionId);
+        };
+        await server.connect(transport);
+        if (transport.sessionId) sessions.set(transport.sessionId, { server, transport });
+        await transport.handleRequest(req, res, req.body);
+      } else {
+        res.status(400).json({ error: 'Bad Request: missing session ID' });
+      }
+    } catch (err) {
+      console.error('[clairvoyant] Request error:', err);
+      if (!res.headersSent) {
+        res.status(500).json({ error: 'Internal server error' });
+      }
     }
   });
 
   // Health check
   app.get('/health', (_req: Request, res: Response) => {
-    res.json({ status: 'ok', version: '0.1.0' });
+    res.json({ status: 'ok', version: '0.1.0', sessions: sessions.size });
   });
 
   const port = parseInt(process.env.PORT || '3000', 10);
-  app.listen(port, '0.0.0.0', () => {
+  const httpServer = app.listen(port, '0.0.0.0', () => {
     console.error(`[clairvoyant] MCP server listening on http://0.0.0.0:${port}/mcp`);
   });
 
   // Graceful shutdown
   const cleanup = async () => {
     console.error('[clairvoyant] Shutting down...');
-    for (const t of transports.values()) await t.close();
-    await server.close();
+    httpServer.close();
+    for (const { server, transport } of sessions.values()) {
+      await transport.close();
+      await server.close();
+    }
     await shutdown();
     process.exit(0);
   };
