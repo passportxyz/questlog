@@ -3,7 +3,7 @@ import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -21,8 +21,11 @@ export { CV_DIR, CONFIG_PATH, TOKEN_PATH, KEY_PATH, PUBKEY_PATH };
 // Config
 // ---------------------------------------------------------------------------
 
+const DEFAULT_SERVER_URL = 'http://localhost:3000/mcp';
+
 export interface CvConfig {
   user_id?: string;
+  server_url?: string;
 }
 
 export async function ensureCvDir(): Promise<void> {
@@ -43,6 +46,12 @@ export async function loadConfig(): Promise<CvConfig> {
 export async function saveConfig(config: CvConfig): Promise<void> {
   await ensureCvDir();
   await writeFile(CONFIG_PATH, JSON.stringify(config, null, 2) + '\n', { mode: 0o600 });
+}
+
+export async function getServerUrl(): Promise<string> {
+  if (process.env.CV_SERVER_URL) return process.env.CV_SERVER_URL;
+  const config = await loadConfig();
+  return config.server_url ?? DEFAULT_SERVER_URL;
 }
 
 // ---------------------------------------------------------------------------
@@ -92,15 +101,13 @@ export async function loadPrivateKey(): Promise<string> {
 export interface McpClientOptions {
   /** If set, use this token instead of reading from ~/.cv/token */
   token?: string;
-  /** If set, pass CV_TOKEN="" to allow unauthenticated tool calls */
+  /** If set, skip sending a token (for unauthenticated tool calls) */
   noAuth?: boolean;
 }
 
 /**
- * Create and connect an MCP client to the Clairvoyant server.
- *
- * For v1, always uses stdio transport — spawns the server as a subprocess.
- * The token is passed via the CV_TOKEN environment variable.
+ * Create and connect an MCP client to the Clairvoyant server via HTTP.
+ * The token is sent as an Authorization: Bearer header.
  */
 export async function createMcpClient(opts: McpClientOptions = {}): Promise<Client> {
   let token = opts.token ?? null;
@@ -108,30 +115,17 @@ export async function createMcpClient(opts: McpClientOptions = {}): Promise<Clie
     token = await loadToken();
   }
 
-  const env: Record<string, string> = {
-    ...process.env as Record<string, string>,
-  };
+  const serverUrl = await getServerUrl();
 
+  const headers: Record<string, string> = {};
   if (token) {
-    env.CV_TOKEN = token;
-  } else {
-    // Some tools (register_user, authenticate) don't require auth.
-    // The server will error on tools that do require it.
-    env.CV_TOKEN = '';
+    headers['Authorization'] = `Bearer ${token}`;
   }
 
-  // Propagate DATABASE_URL and CV_JWT_SECRET from parent environment
-  // (these should already be in process.env)
-
-  const transport = new StdioClientTransport({
-    command: process.execPath, // node or tsx
-    args: [
-      '--import', 'tsx/esm',
-      new URL('../src/server.ts', import.meta.url).pathname,
-    ],
-    env,
-    stderr: 'pipe',
-  });
+  const transport = new StreamableHTTPClientTransport(
+    new URL(serverUrl),
+    { requestInit: { headers } },
+  );
 
   const client = new Client(
     { name: 'cv-cli', version: '0.1.0' },

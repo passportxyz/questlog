@@ -1,10 +1,14 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import { createMcpExpressApp } from '@modelcontextprotocol/sdk/server/express.js';
+import type { AuthInfo } from '@modelcontextprotocol/sdk/server/auth/types.js';
+import type { Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
+import crypto from 'node:crypto';
 
 import { getPool, shutdown } from './db/pool.js';
 import { runMigrations } from './db/migrate.js';
-import { extractActorId } from './auth.js';
+import { verifyToken } from './auth.js';
 import { AuthError } from './types.js';
 import { processSideEffects } from './webhooks.js';
 import { checkUnblocks } from './unblock.js';
@@ -23,10 +27,11 @@ import { listTasks } from './db/queries.js';
 // Helpers
 // ---------------------------------------------------------------------------
 
-function getActorIdFromEnv(): string {
-  const token = process.env.CV_TOKEN;
-  if (!token) throw new AuthError('CV_TOKEN environment variable is required', 'missing_token');
-  return extractActorId(token);
+function getActorIdFromAuth(authInfo?: AuthInfo): string {
+  if (!authInfo?.extra?.actorId) {
+    throw new AuthError('Authentication required — provide a Bearer token', 'missing_token');
+  }
+  return authInfo.extra.actorId as string;
 }
 
 function textResult(data: unknown) {
@@ -43,11 +48,12 @@ type ToolHandler<T> = (client: import('pg').PoolClient, actorId: string, params:
 /**
  * Wrap a tool handler with: auth, pool connection, transaction, error handling.
  * Write handlers get BEGIN/COMMIT/ROLLBACK. Side effects are processed after commit.
+ * Auth is extracted from the MCP extra.authInfo (populated by HTTP middleware).
  */
 function withClient<T>(handler: ToolHandler<T>, opts: { write?: boolean } = {}) {
-  return async (params: T) => {
+  return async (params: T, extra: { authInfo?: AuthInfo }) => {
     try {
-      const actorId = getActorIdFromEnv();
+      const actorId = getActorIdFromAuth(extra.authInfo);
       const pool = getPool();
       const client = await pool.connect();
       try {
@@ -75,7 +81,7 @@ function withClient<T>(handler: ToolHandler<T>, opts: { write?: boolean } = {}) 
  * Wrap an unauthenticated tool handler (no actorId).
  */
 function withClientNoAuth<T>(handler: (client: import('pg').PoolClient, params: T) => Promise<unknown>) {
-  return async (params: T) => {
+  return async (params: T, _extra: { authInfo?: AuthInfo }) => {
     try {
       const pool = getPool();
       const client = await pool.connect();
@@ -288,7 +294,7 @@ server.tool(
 );
 
 // ---------------------------------------------------------------------------
-// Transport & startup
+// HTTP Transport & startup
 // ---------------------------------------------------------------------------
 
 async function main() {
@@ -304,13 +310,70 @@ async function main() {
   startStalenessChecker(pool);
   console.error('[clairvoyant] Staleness checker started.');
 
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
-  console.error('[clairvoyant] MCP server running on stdio.');
+  // Express app with MCP defaults (JSON body parser, host validation)
+  const app = createMcpExpressApp({ host: '0.0.0.0' });
+
+  // JWT auth middleware — extracts Bearer token and attaches as AuthInfo
+  app.use('/mcp', (req: Request, _res: Response, next: NextFunction) => {
+    const authHeader = req.headers.authorization;
+    if (authHeader?.startsWith('Bearer ')) {
+      const token = authHeader.slice(7);
+      try {
+        const payload = verifyToken(token);
+        (req as unknown as { auth: AuthInfo }).auth = {
+          token,
+          clientId: payload.sub,
+          scopes: [],
+          extra: { actorId: payload.sub, name: payload.name },
+        };
+      } catch {
+        // Let unauthenticated requests through —
+        // tools that require auth will fail in withClient
+      }
+    }
+    next();
+  });
+
+  // Session management for stateful MCP connections
+  const transports = new Map<string, StreamableHTTPServerTransport>();
+
+  app.all('/mcp', async (req: Request, res: Response) => {
+    const sessionId = req.headers['mcp-session-id'] as string | undefined;
+
+    if (sessionId && transports.has(sessionId)) {
+      // Existing session
+      const transport = transports.get(sessionId)!;
+      await transport.handleRequest(req, res, req.body);
+    } else if (!sessionId && req.method === 'POST') {
+      // New session — create transport, connect to server
+      const transport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: () => crypto.randomUUID(),
+      });
+      transport.onclose = () => {
+        if (transport.sessionId) transports.delete(transport.sessionId);
+      };
+      await server.connect(transport);
+      if (transport.sessionId) transports.set(transport.sessionId, transport);
+      await transport.handleRequest(req, res, req.body);
+    } else {
+      res.status(400).json({ error: 'Bad Request: missing or invalid session' });
+    }
+  });
+
+  // Health check
+  app.get('/health', (_req: Request, res: Response) => {
+    res.json({ status: 'ok', version: '0.1.0' });
+  });
+
+  const port = parseInt(process.env.PORT || '3000', 10);
+  app.listen(port, '0.0.0.0', () => {
+    console.error(`[clairvoyant] MCP server listening on http://0.0.0.0:${port}/mcp`);
+  });
 
   // Graceful shutdown
   const cleanup = async () => {
     console.error('[clairvoyant] Shutting down...');
+    for (const t of transports.values()) await t.close();
     await server.close();
     await shutdown();
     process.exit(0);

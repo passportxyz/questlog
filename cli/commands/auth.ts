@@ -197,14 +197,15 @@ export function registerAuthCommands(program: Command): void {
     .description('Print MCP config JSON snippet for use in agent config files')
     .action(async () => {
       const token = await loadToken();
+      const { getServerUrl } = await import('../config.js');
+      const serverUrl = await getServerUrl();
 
       const config = {
         mcpServers: {
           clairvoyant: {
-            command: 'npx',
-            args: ['tsx', 'src/server.ts'],
-            env: {
-              CV_TOKEN: token ?? '<your-token-here>',
+            url: serverUrl,
+            headers: {
+              Authorization: `Bearer ${token ?? '<your-token-here>'}`,
             },
           },
         },
