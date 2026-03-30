@@ -392,12 +392,14 @@ async function main() {
         const server = createServer();
         const transport = new StreamableHTTPServerTransport({
           sessionIdGenerator: () => crypto.randomUUID(),
+          onsessioninitialized: (sessionId) => {
+            sessions.set(sessionId, { server, transport });
+          },
         });
         transport.onclose = () => {
           if (transport.sessionId) sessions.delete(transport.sessionId);
         };
         await server.connect(transport);
-        if (transport.sessionId) sessions.set(transport.sessionId, { server, transport });
         await transport.handleRequest(req, res, req.body);
       } else {
         res.status(400).json({ error: 'Bad Request: missing session ID' });
