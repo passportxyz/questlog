@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { createMcpExpressApp } from '@modelcontextprotocol/sdk/server/express.js';
@@ -5,6 +8,9 @@ import type { AuthInfo } from '@modelcontextprotocol/sdk/server/auth/types.js';
 import type { Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import crypto from 'node:crypto';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const pkg = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf-8'));
 
 import { getPool, shutdown } from './db/pool.js';
 import { runMigrations } from './db/migrate.js';
@@ -177,7 +183,7 @@ function processSideEffectsFromResult(result: unknown): void {
 
 function createServer(): McpServer {
   const server = new McpServer(
-    { name: 'clairvoyant', version: '0.1.0' },
+    { name: 'clairvoyant', version: pkg.version },
     { capabilities: { tools: {} } },
   );
 
@@ -437,7 +443,7 @@ async function main() {
 
   // Health check
   app.get('/health', (_req: Request, res: Response) => {
-    res.json({ status: 'ok', version: '0.1.0', sessions: sessions.size });
+    res.json({ status: 'ok', version: pkg.version, sessions: sessions.size });
   });
 
   const port = parseInt(process.env.PORT || '3000', 10);

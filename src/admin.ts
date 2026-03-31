@@ -135,6 +135,25 @@ export function createAdminRouter(): Router {
   // All remaining admin routes require auth
   router.use(requireAuth);
 
+  // ── POST /admin/revoke-self ──────────────────────────────────────
+  // Only way to remove admin status — you can only revoke your own
+  router.post('/revoke-self', async (req: Request, res: Response) => {
+    const actorId = (req as unknown as AuthedRequest).actorId;
+    const pool = getPool();
+    const client = await pool.connect();
+    try {
+      const actor = await getUserById(client, actorId);
+      if (!actor?.is_admin) {
+        res.status(400).json({ error: 'You are not an admin' });
+        return;
+      }
+      const user = await setAdmin(client, actorId, false);
+      res.json({ user });
+    } finally {
+      client.release();
+    }
+  });
+
   // ── GET /admin/users ─────────────────────────────────────────────
   router.get('/users', requireAdmin, async (_req: Request, res: Response) => {
     const pool = getPool();

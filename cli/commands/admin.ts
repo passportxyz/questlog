@@ -48,6 +48,18 @@ export function registerAdminCommands(program: Command): void {
       }
     });
 
+  // ── cv admin step-down ───────────────────────────────────────────
+
+  admin
+    .command('step-down')
+    .description('Revoke your own admin status (the only way to remove admin)')
+    .action(async () => {
+      const result = await adminCall('POST', '/revoke-self') as {
+        user: Record<string, unknown>;
+      };
+      console.log(`Admin revoked: ${formatUser(result.user)}`);
+    });
+
   // ── cv admin approve <user_id> ──────────────────────────────────
 
   admin
