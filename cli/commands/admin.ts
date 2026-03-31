@@ -6,7 +6,7 @@ import { createMcpClient, callTool, loadConfig, quickCall } from '../config.js';
 // ---------------------------------------------------------------------------
 
 function formatUser(u: Record<string, unknown>): string {
-  const id = String(u.id ?? '').slice(0, 8);
+  const id = String(u.id ?? '');
   const name = u.name ?? '(unknown)';
   const status = u.status ?? 'active';
   const admin = u.is_admin ? ' [admin]' : '';
