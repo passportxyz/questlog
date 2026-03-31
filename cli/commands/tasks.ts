@@ -12,11 +12,11 @@ function idemKey(): string {
 
 function formatTask(t: Record<string, unknown>): string {
   const lines: string[] = [];
-  const id = String(t.id ?? '').slice(0, 8);
+  const id = String(t.id ?? '');
   const status = String(t.status ?? 'open');
   const priority = t.priority != null ? ` P${t.priority}` : '';
   const tags = Array.isArray(t.tags) && t.tags.length > 0 ? ` [${t.tags.join(', ')}]` : '';
-  const owner = t.owner_id ? ` owner:${String(t.owner_id).slice(0, 8)}` : ' unowned';
+  const owner = t.owner_id ? ` owner:${String(t.owner_id)}` : ' unowned';
 
   lines.push(`${id}  ${status}${priority}${owner}${tags}`);
   lines.push(`  ${t.title}`);
@@ -82,10 +82,11 @@ export function registerTaskCommands(program: Command): void {
 
       const client = await createMcpClient();
       try {
-        const result = await callTool(client, 'create_task', args) as Record<string, unknown>;
-        console.log(`Created task: ${result.id}`);
+        const result = await callTool(client, 'create_task', args) as { task: Record<string, unknown> };
+        const task = result.task;
+        console.log(`Created task: ${task.id}`);
         console.log(`  Title: ${title}`);
-        if (result.status) console.log(`  Status: ${result.status}`);
+        if (task.status) console.log(`  Status: ${task.status}`);
       } finally {
         await client.close();
       }

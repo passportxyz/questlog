@@ -8,7 +8,8 @@ import {
   getEventByIdempotencyKey,
   getUserById,
 } from '../db/queries.js';
-import type { Task, Event } from '../types.js';
+import { applyEvent } from '../projection.js';
+import type { Task, Event, SideEffect } from '../types.js';
 
 // ── createTask ────────────────────────────────────────────────────
 
@@ -31,13 +32,13 @@ export async function createTask(
   client: pg.PoolClient,
   actorId: string,
   input: CreateTaskInput,
-): Promise<{ task: Task; event: Event }> {
+): Promise<{ task: Task; event: Event; sideEffects: SideEffect[] }> {
   // Idempotency check
   const existing = await getEventByIdempotencyKey(client, input.idempotency_key);
   if (existing) {
     const task = await getTaskById(client, existing.task_id);
     if (!task) throw new Error(`Idempotent event references missing task ${existing.task_id}`);
-    return { task, event: existing };
+    return { task, event: existing, sideEffects: [] };
   }
 
   // Validate owner_id if provided
@@ -81,7 +82,10 @@ export async function createTask(
     idempotency_key: input.idempotency_key,
   });
 
-  return { task, event };
+  // Apply projection for side effects (webhooks, staleness reset)
+  const { sideEffects } = applyEvent(event);
+
+  return { task, event, sideEffects };
 }
 
 // ── getTask ───────────────────────────────────────────────────────
