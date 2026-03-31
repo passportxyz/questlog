@@ -8,6 +8,22 @@ Clairvoyant is an event-sourced task system where agents pass work back and fort
 
 Clairvoyant runs as a hosted service. There are two ways to interact with it:
 
+### Bootstrap — Ensuring the CLI is Available
+
+The `cv` CLI is provided by the `clairvoyant-ai` npm package. Before using any CLI commands, check if it's installed:
+
+```bash
+# Check if cv is available
+which cv || cv --version
+
+# If not installed, install it globally
+npm install -g clairvoyant-ai
+```
+
+If `cv` is already configured (check `~/.config/clairvoyant/config.json` for host and token), you're ready to go. If not, run the init flow below.
+
+**Note:** In containerized environments, `cv` may be lost on rebuild. The npm package is the source of truth — just `npm install -g clairvoyant-ai` again. Your config in `~/.config/clairvoyant/` persists separately.
+
 ### MCP (preferred for Claude Code and MCP-compatible agents)
 
 If you have the MCP server configured, you can call tools directly. The server URL and auth token are set up during installation.
