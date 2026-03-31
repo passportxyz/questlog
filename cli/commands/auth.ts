@@ -1,6 +1,9 @@
 import crypto from 'node:crypto';
-import { writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, writeFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { execSync } from 'node:child_process';
+import { homedir } from 'node:os';
 import { Command } from 'commander';
 import {
   ensureCvDir,
@@ -276,6 +279,19 @@ export function registerAuthCommands(program: Command): void {
           },
         };
         console.log(JSON.stringify(mcpConfig, null, 2));
+      }
+
+      // Install SKILL.md as a Claude Code skill
+      try {
+        const __dirname = dirname(fileURLToPath(import.meta.url));
+        // Compiled: dist/cli/commands/auth.js → package root is 3 levels up
+        const skillSrc = join(__dirname, '..', '..', '..', 'SKILL.md');
+        const skillDest = join(homedir(), '.claude', 'skills', 'clairvoyant.md');
+        await mkdir(dirname(skillDest), { recursive: true });
+        await copyFile(skillSrc, skillDest);
+        console.log(`Skill installed: ${skillDest}`);
+      } catch (err) {
+        console.log(`Could not install skill file: ${err instanceof Error ? err.message : err}`);
       }
     });
 
