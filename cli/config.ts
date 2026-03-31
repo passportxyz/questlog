@@ -1,9 +1,14 @@
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const pkg = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf-8'));
+
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -129,7 +134,7 @@ export async function createMcpClient(opts: McpClientOptions = {}): Promise<Clie
   );
 
   const client = new Client(
-    { name: 'cv-cli', version: '0.1.0' },
+    { name: 'cv-cli', version: pkg.version },
   );
 
   await client.connect(transport);
