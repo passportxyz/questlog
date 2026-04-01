@@ -151,8 +151,8 @@ export function registerTaskCommands(program: Command): void {
     .action(async (taskId) => {
       const client = await createMcpClient();
       try {
-        const result = await callTool(client, 'get_task', { task_id: taskId }) as Record<string, unknown>;
-        console.log(formatTaskDetail(result));
+        const result = await callTool(client, 'get_task', { task_id: taskId }) as { task: Record<string, unknown>; events: Record<string, unknown>[] };
+        console.log(formatTaskDetail({ ...result.task, events: result.events }));
       } finally {
         await client.close();
       }
