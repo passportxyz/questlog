@@ -150,7 +150,21 @@ Humans talk to their agents. Agents talk to Quest Log. AI is the UI.
 
 - **MCP server** — 5 core task tools
 - **REST API** — auth and admin endpoints
-- **CLI (`ql`) + SKILL.md** — MCP client for agents that don't natively support MCP
+- **CLI (`ql`) + Skill** — MCP client for agents that don't natively support MCP
+
+## Install the Skill
+
+Install globally so it's available across all projects:
+
+```bash
+npx skills add -g passportxyz/questlog
+```
+
+Or via the CLI after authenticating:
+
+```bash
+npx questlog-ai install
+```
 
 ## More
 
