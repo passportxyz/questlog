@@ -180,19 +180,18 @@ export function registerTaskCommands(program: Command): void {
       }
     });
 
-  // ── ql update <task_id> <subcommand> ─────────────────────────
+  // ── ql update <subcommand> <task_id> ... ─────────────────────
 
   const update = program
-    .command('update <task_id>')
+    .command('update')
     .description('Update a task (use a subcommand: note, progress, done, cancel, block, handoff, set)');
 
-  // ── ql update <id> progress <message> ────────────────────────
+  // ── ql update progress <task_id> <message> ─────────────────
 
   update
-    .command('progress <message>')
+    .command('progress <task_id> <message>')
     .description('Log progress on a task')
-    .action(async (message, _opts, cmd) => {
-      const taskId = cmd.parent!.args[0];
+    .action(async (taskId, message) => {
       const client = await createMcpClient();
       try {
         await callTool(client, 'update_task', {
@@ -207,13 +206,12 @@ export function registerTaskCommands(program: Command): void {
       }
     });
 
-  // ── ql update <id> note <message> ────────────────────────────
+  // ── ql update note <task_id> <message> ─────────────────────
 
   update
-    .command('note <message>')
+    .command('note <task_id> <message>')
     .description('Add a note to a task')
-    .action(async (message, _opts, cmd) => {
-      const taskId = cmd.parent!.args[0];
+    .action(async (taskId, message) => {
       const client = await createMcpClient();
       try {
         await callTool(client, 'update_task', {
@@ -228,13 +226,12 @@ export function registerTaskCommands(program: Command): void {
       }
     });
 
-  // ── ql update <id> handoff <user_id> [message] ──────────────
+  // ── ql update handoff <task_id> <user_id> [message] ────────
 
   update
-    .command('handoff <user_id> [message]')
+    .command('handoff <task_id> <user_id> [message]')
     .description('Hand off a task to another user')
-    .action(async (userId, message, _opts, cmd) => {
-      const taskId = cmd.parent!.args[0];
+    .action(async (taskId, userId, message) => {
       const client = await createMcpClient();
       try {
         await callTool(client, 'update_task', {
@@ -250,14 +247,13 @@ export function registerTaskCommands(program: Command): void {
       }
     });
 
-  // ── ql update <id> block [reason] ────────────────────────────
+  // ── ql update block <task_id> [reason] ─────────────────────
 
   update
-    .command('block [reason]')
+    .command('block <task_id> [reason]')
     .description('Mark a task as blocked')
     .option('--blocked-by <id>', 'Blocking task ID')
-    .action(async (reason, opts, cmd) => {
-      const taskId = cmd.parent!.args[0];
+    .action(async (taskId, reason, opts) => {
       const metadata: Record<string, unknown> = {};
       if (opts.blockedBy) metadata.blocked_by_task_id = opts.blockedBy;
 
@@ -276,13 +272,12 @@ export function registerTaskCommands(program: Command): void {
       }
     });
 
-  // ── ql update <id> done [message] ────────────────────────────
+  // ── ql update done <task_id> [message] ─────────────────────
 
   update
-    .command('done [message]')
+    .command('done <task_id> [message]')
     .description('Mark a task as completed')
-    .action(async (message, _opts, cmd) => {
-      const taskId = cmd.parent!.args[0];
+    .action(async (taskId, message) => {
       const client = await createMcpClient();
       try {
         await callTool(client, 'update_task', {
@@ -297,13 +292,12 @@ export function registerTaskCommands(program: Command): void {
       }
     });
 
-  // ── ql update <id> cancel [reason] ───────────────────────────
+  // ── ql update cancel <task_id> [reason] ────────────────────
 
   update
-    .command('cancel [reason]')
+    .command('cancel <task_id> [reason]')
     .description('Cancel a task')
-    .action(async (reason, _opts, cmd) => {
-      const taskId = cmd.parent!.args[0];
+    .action(async (taskId, reason) => {
       const client = await createMcpClient();
       try {
         await callTool(client, 'update_task', {
@@ -318,14 +312,12 @@ export function registerTaskCommands(program: Command): void {
       }
     });
 
-  // ── ql update <id> set <field> <value> ───────────────────────
+  // ── ql update set <task_id> <field> <value> ────────────────
 
   update
-    .command('set <field> <value>')
+    .command('set <task_id> <field> <value>')
     .description('Change a task field (title, priority, due_date, tags)')
-    .action(async (field, value, _opts, cmd) => {
-      const taskId = cmd.parent!.args[0];
-
+    .action(async (taskId, field, value) => {
       // First get the current task to obtain old_value
       const client = await createMcpClient();
       try {

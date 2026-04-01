@@ -45,13 +45,13 @@ ql list                           # list tasks
 ql add "Fix the widget"           # create a task
 ql show <task_id>                 # see task details + event history
 ql claim <task_id>                # claim an unowned task
-ql update <id> progress "msg"     # log progress
-ql update <id> note "msg"         # add a note
-ql update <id> handoff <uid> "msg"  # hand off to someone
-ql update <id> done "msg"         # mark complete
-ql update <id> cancel "reason"    # cancel a task
-ql update <id> block --blocked-by <id> "reason"  # mark blocked
-ql update <id> set priority 1     # change a field
+ql update progress <id> "msg"     # log progress
+ql update note <id> "msg"         # add a note
+ql update handoff <id> <uid> "msg"  # hand off to someone
+ql update done <id> "msg"         # mark complete
+ql update cancel <id> "reason"    # cancel a task
+ql update block <id> --blocked-by <id> "reason"  # mark blocked
+ql update set <id> priority 1     # change a field
 ql auth login                     # re-authenticate (refresh token)
 ql auth status                    # check auth status
 ql mcp-config                     # print MCP config JSON
