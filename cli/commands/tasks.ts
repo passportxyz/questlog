@@ -43,7 +43,7 @@ function formatTaskDetail(t: Record<string, unknown>): string {
     lines.push('Events:');
     for (const e of t.events as Record<string, unknown>[]) {
       const ts = String(e.created_at ?? '').slice(0, 19);
-      const actor = String(e.actor_id ?? '').slice(0, 8);
+      const actor = String(e.actor_id ?? '');
       const body = e.body ? `: ${e.body}` : '';
       lines.push(`  ${ts}  ${e.event_type}  by ${actor}${body}`);
     }
@@ -329,8 +329,8 @@ export function registerTaskCommands(program: Command): void {
       // First get the current task to obtain old_value
       const client = await createMcpClient();
       try {
-        const result = await callTool(client, 'get_task', { task_id: taskId }) as Record<string, unknown>;
-        const currentValue = result[field];
+        const result = await callTool(client, 'get_task', { task_id: taskId }) as { task: Record<string, unknown>; events: Record<string, unknown>[] };
+        const currentValue = result.task[field];
 
         let newValue: unknown = value;
         if (field === 'priority') newValue = parseInt(value, 10);

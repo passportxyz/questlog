@@ -72,7 +72,7 @@ export function registerAdminCommands(program: Command): void {
       };
       console.log(`Approved: ${formatUser(result.user)}`);
       if (result.key) {
-        console.log(`  Key ${result.key.id.slice(0, 8)} → ${result.key.status}`);
+        console.log(`  Key ${result.key.id} → ${result.key.status}`);
       }
     });
 
@@ -100,7 +100,7 @@ export function registerAdminCommands(program: Command): void {
     .description('Revoke a user\'s key (they must register a new one)')
     .action(async (userId) => {
       await adminCall('POST', '/revoke-key', { user_id: userId });
-      console.log(`Key revoked for user: ${userId.slice(0, 8)}`);
+      console.log(`Key revoked for user: ${userId}`);
       console.log('User must register a new key and get re-approved.');
     });
 
