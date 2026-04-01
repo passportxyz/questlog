@@ -30,7 +30,7 @@ If Quest Log is already set up in your org, this is all you need.
 ### 1. Install the CLI and connect
 
 ```sh
-npm install -g quest-log
+npm install -g questlog-ai
 
 ql init --host https://quest-log.your-org.com
 ```
@@ -85,7 +85,7 @@ Migrations run automatically on startup.
 
 ```sh
 # Install CLI and connect
-npm install -g quest-log
+npm install -g questlog-ai
 ql init --host https://quest-log.your-org.com
 
 # Register yourself (ql init generated your keypair)

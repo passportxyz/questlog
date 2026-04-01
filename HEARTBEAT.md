@@ -13,7 +13,7 @@
 _None_
 
 ## Notes
-- Renamed from Clairvoyant to Quest Log (CLI: `ql`, package: `quest-log`)
+- Renamed from Clairvoyant to Quest Log (CLI: `ql`, package: `questlog-ai`)
 - MCP surface: 5 tools (create_task, list_tasks, get_task, update_task, claim_task)
 - Auth/admin moved to REST endpoints
 - GitHub repo: passportxyz/questlog

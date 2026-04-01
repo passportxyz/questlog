@@ -1,5 +1,5 @@
 {
-  "name": "quest-log",
+  "name": "questlog-ai",
   "version": "0.2.1",
   "type": "module",
   "description": "Quest Log — event-sourced task management system with MCP interface",

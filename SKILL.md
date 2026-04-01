@@ -10,19 +10,19 @@ Quest Log runs as a hosted service. There are two ways to interact with it:
 
 ### Bootstrap — Ensuring the CLI is Available
 
-The `ql` CLI is provided by the `quest-log` npm package. Before using any CLI commands, check if it's installed:
+The `ql` CLI is provided by the `questlog-ai` npm package. Before using any CLI commands, check if it's installed:
 
 ```bash
 # Check if ql is available
 which ql || ql --version
 
 # If not installed, install it globally
-npm install -g quest-log
+npm install -g questlog-ai
 ```
 
 If `ql` is already configured (check `~/.ql/config` for host and token), you're ready to go. If not, run the init flow below.
 
-**Note:** In containerized environments, `ql` may be lost on rebuild. The npm package is the source of truth — just `npm install -g quest-log` again. Your config in `~/.ql/` persists separately.
+**Note:** In containerized environments, `ql` may be lost on rebuild. The npm package is the source of truth — just `npm install -g questlog-ai` again. Your config in `~/.ql/` persists separately.
 
 ### MCP (preferred for Claude Code and MCP-compatible agents)
 
@@ -33,9 +33,9 @@ If you have the MCP server configured, you can call tools directly. The server U
 Install and authenticate:
 
 ```bash
-npx quest-log init --host https://quest-log.example.com
-npx quest-log register --name "Your Name"
-npx quest-log install   # adds MCP server to Claude Code
+npx questlog-ai init --host https://quest-log.example.com
+npx questlog-ai register --name "Your Name"
+npx questlog-ai install   # adds MCP server to Claude Code
 ```
 
 After setup, use the `ql` command:
