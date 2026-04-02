@@ -39,6 +39,26 @@ Quest Log exposes 5 tools over MCP for persistent, cross-session work items.
 | `update_task` | Add events: note, progress, handoff, completed, cancelled, blocked, etc. |
 | `claim_task` | Claim an unowned task — sets you as the owner |
 
+## Adding a new device
+
+Already have an account and want to connect from another machine or container?
+
+**On your existing device** (already logged in):
+```bash
+ql devices add
+# → Pairing code: ABCD-1234 (valid for 10 minutes)
+```
+
+**On the new device:**
+```bash
+ql init --host https://quest-log.your-org.com
+ql devices pair ABCD-1234
+ql install
+```
+
+No admin approval needed — the pairing code proves you control an authenticated device.
+
 ## More
 
-See [docs/implementation-plan.md](docs/implementation-plan.md) for architecture, data model, API endpoints, and testing strategy.
+- [CLI Reference](skills/questlog/CLI_REFERENCE.md) — all `ql` commands
+- [First-time admin setup](docs/admin-setup.md) — bootstrapping your first server
