@@ -19,7 +19,7 @@ RUN npm ci --omit=dev
 
 COPY --from=builder /app/dist/ dist/
 COPY migrations/ migrations/
-COPY SKILL.md ./
+COPY skills/ skills/
 
 RUN addgroup -S app && adduser -S app -G app
 USER app
