@@ -1,6 +1,6 @@
 # Quest Log
 
-Task management where humans and AI agents pass work back and forth. Every task has a ball, and it's always in someone's court.
+A simple task system that gives humans and AI agents a shared canvas to build efficient workflows — turning your processes and knowledge into something the system remembers.
 
 ## Install
 
