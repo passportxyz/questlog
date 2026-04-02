@@ -382,13 +382,13 @@ export function registerAuthCommands(program: Command): void {
       console.log();
       console.log(`On the new device, run:`);
       console.log(`  ql init --host ${host}`);
-      console.log(`  ql claim ${result.code}`);
+      console.log(`  ql devices pair ${result.code}`);
     });
 
-  // ── ql claim ───────────────────────────────────────────────
+  // ── ql devices pair ─────────────────────────────────────────
 
-  program
-    .command('claim <code>')
+  devices
+    .command('pair <code>')
     .description('Link this device to an existing account using a pairing code')
     .action(async (code: string) => {
       // Require ql init to have been run (we need the keypair)

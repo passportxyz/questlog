@@ -43,7 +43,7 @@ ql auth status                       # check auth status
 
 ```
 ql devices add                       # generate pairing code (10 min TTL)
-ql claim <code>                      # link new device using pairing code
+ql devices pair <code>               # link new device using pairing code
 ```
 
 ## Utility Commands

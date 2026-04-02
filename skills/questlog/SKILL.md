@@ -54,7 +54,7 @@ ql devices add
 **On the new device:**
 ```bash
 ql init --host https://quest-log.your-org.com
-ql claim ABCD-1234
+ql devices pair ABCD-1234
 # Automatically links to the existing account and saves a token
 ql install
 ```
