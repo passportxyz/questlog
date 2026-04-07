@@ -3,14 +3,20 @@ import type { Request, Response } from 'express';
 import pg from 'pg';
 import { createReadStream } from 'node:fs';
 import { requireAuth } from './middleware.js';
+import { validateAccessCode } from './access-codes.js';
 import { getAttachmentById } from './db/queries.js';
 
 export function createAttachmentsRouter(pool: pg.Pool): Router {
   const router = Router();
 
-  router.use(requireAuth);
-
-  router.get('/:id', async (req: Request, res: Response) => {
+  router.get('/:id', async (req: Request, res: Response, next: () => void) => {
+    const code = req.query.code as string | undefined;
+    if (code && validateAccessCode(code, req.params.id as string)) {
+      next(); // valid access code, skip auth
+    } else {
+      requireAuth(req, res, next); // fall back to Bearer token
+    }
+  }, async (req: Request, res: Response) => {
     const attachmentId = req.params.id as string;
     const client = await pool.connect();
     try {

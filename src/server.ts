@@ -25,11 +25,12 @@ import { createTask } from './tools/tasks.js';
 import { getTask } from './tools/tasks.js';
 import { updateTask } from './tools/events.js';
 import { claimTask } from './tools/events.js';
-import { listTasks, listUsers } from './db/queries.js';
+import { listTasks, listUsers, getAttachmentById } from './db/queries.js';
 import { createAdminRouter } from './admin.js';
 import { createAuthRouter } from './auth-router.js';
 import { createAttachmentsRouter } from './attachments-router.js';
 import { attachFile } from './tools/attachments.js';
+import { generateAccessCode } from './access-codes.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -252,6 +253,24 @@ function createServer(): McpServer {
     withClient(async (client, actorId, params) => {
       return attachFile(client, actorId, params);
     }, { write: true }),
+  );
+
+  // ── get_attachment_url ──────────────────────────────────────────
+
+  server.tool(
+    'get_attachment_url',
+    'Generate a short-lived public download URL for an attachment. The link expires after 1 hour. Use when sharing attachment links in messages, handoffs, or notes.',
+    {
+      attachment_id: z.string().describe('The attachment ID'),
+    },
+    withClient(async (client, _actorId, params) => {
+      const attachment = await getAttachmentById(client, params.attachment_id);
+      if (!attachment) throw new Error(`Attachment not found: ${params.attachment_id}`);
+      const code = generateAccessCode(params.attachment_id);
+      const baseUrl = (process.env.PUBLIC_URL || '').replace(/\/+$/, '');
+      const url = `${baseUrl}/attachments/${params.attachment_id}?code=${code}`;
+      return { url, expires_in: '1 hour', filename: attachment.filename };
+    }),
   );
 
   return server;
