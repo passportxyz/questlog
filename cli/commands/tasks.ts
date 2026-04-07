@@ -46,6 +46,7 @@ function formatTaskDetail(t: Record<string, unknown>): string {
     for (const a of t.attachments as Record<string, unknown>[]) {
       lines.push(`  ${a.id}  ${a.filename} (${a.size_bytes} bytes)`);
       lines.push(`    ${a.description}`);
+      if (a.download_url) lines.push(`    ${a.download_url}`);
     }
   }
 
@@ -163,6 +164,15 @@ export function registerTaskCommands(program: Command): void {
       const client = await createMcpClient();
       try {
         const result = await callTool(client, 'get_task', { task_id: taskId }) as { task: Record<string, unknown>; events: Record<string, unknown>[]; attachments?: Record<string, unknown>[] };
+        // Generate download URLs for attachments
+        if (Array.isArray(result.attachments)) {
+          for (const a of result.attachments as Record<string, unknown>[]) {
+            try {
+              const urlResult = await callTool(client, 'get_attachment_url', { attachment_id: String(a.id) }) as { url: string };
+              a.download_url = urlResult.url;
+            } catch { /* ignore — URL generation is best-effort */ }
+          }
+        }
         console.log(formatTaskDetail({ ...result.task, events: result.events, attachments: result.attachments }));
       } finally {
         await client.close();
