@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
-import { resolve } from 'node:path';
+import { readFileSync } from 'node:fs';
+import { resolve, basename } from 'node:path';
 import { Command } from 'commander';
 import { createMcpClient, callTool, loadConfig } from '../config.js';
 
@@ -177,12 +178,15 @@ export function registerTaskCommands(program: Command): void {
     .requiredOption('--description <desc>', 'Description of what this file contains')
     .action(async (taskId, opts) => {
       const filePath = resolve(opts.file);
+      const fileData = readFileSync(filePath).toString('base64');
+      const filename = basename(filePath);
 
       const client = await createMcpClient();
       try {
         const result = await callTool(client, 'attach_file', {
           task_id: taskId,
-          file_path: filePath,
+          file_data: fileData,
+          filename,
           description: opts.description,
         }) as { attachment: Record<string, unknown> };
         const att = result.attachment;

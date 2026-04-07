@@ -242,10 +242,11 @@ function createServer(): McpServer {
 
   server.tool(
     'attach_file',
-    'Attach a file to a task. Reads a local file, stores it, and records metadata. Max 10MB. Use for screenshots, logs, design mockups, or any artifact relevant to a task.',
+    'Attach a file to a task. Send file content as base64 with a filename. Max 10MB. Use for screenshots, logs, design mockups, or any artifact relevant to a task.',
     {
       task_id: z.string().describe('The task to attach the file to'),
-      file_path: z.string().describe('Absolute path to the file on the local filesystem'),
+      file_data: z.string().describe('Base64-encoded file content'),
+      filename: z.string().describe('Original filename (e.g. screenshot.png)'),
       description: z.string().describe('What this attachment contains and why it is relevant'),
     },
     withClient(async (client, actorId, params) => {
