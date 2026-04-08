@@ -31,6 +31,7 @@ import { createAuthRouter } from './auth-router.js';
 import { createAttachmentsRouter } from './attachments-router.js';
 import { attachFile } from './tools/attachments.js';
 import { generateAccessCode } from './access-codes.js';
+import { createBoardRouter, generateBoardCode } from './board-router.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -273,6 +274,20 @@ function createServer(): McpServer {
     }),
   );
 
+  // ── generate_board_code ──────────────────────────────────────────
+
+  server.tool(
+    'generate_board_code',
+    'Generate a short-lived code that grants read-only board access for 30 days. The user enters this code at /board to authenticate. Code expires in 10 minutes if unused.',
+    {},
+    withClient(async (client, actorId, _params) => {
+      const user = await import('./db/queries.js').then(m => m.getUserById(client, actorId));
+      if (!user) throw new Error('User not found');
+      const code = generateBoardCode(user.id, user.name);
+      return { code, expires_in: '10 minutes', instructions: 'Enter this code at /board to access the Quest Log dashboard' };
+    }),
+  );
+
   return server;
 }
 
@@ -306,6 +321,9 @@ async function main() {
 
   // Mount attachments file serving
   app.use('/attachments', createAttachmentsRouter(pool));
+
+  // Mount read-only board UI
+  app.use('/board', createBoardRouter(pool));
 
   // JWT auth middleware — extracts Bearer token and attaches as AuthInfo
   app.use('/mcp', (req: Request, _res: Response, next: NextFunction) => {

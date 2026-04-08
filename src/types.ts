@@ -113,6 +113,7 @@ export interface DeviceCode {
 export interface JwtPayload {
   sub: string;
   name: string;
+  scope?: string;
   iat: number;
   exp: number;
 }

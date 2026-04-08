@@ -28,14 +28,13 @@ function getExpiryDays(): number {
 export function signToken(payload: {
   sub: string;
   name: string;
-}): string {
+  scope?: string;
+}, expiryDays?: number): string {
   const secret = getSecret();
-  const expiryDays = getExpiryDays();
-  return jwt.sign(
-    { sub: payload.sub, name: payload.name },
-    secret,
-    { algorithm: 'HS256', expiresIn: `${expiryDays}d` },
-  );
+  const days = expiryDays ?? getExpiryDays();
+  const claims: Record<string, unknown> = { sub: payload.sub, name: payload.name };
+  if (payload.scope) claims.scope = payload.scope;
+  return jwt.sign(claims, secret, { algorithm: 'HS256', expiresIn: `${days}d` });
 }
 
 export function verifyToken(token: string): JwtPayload {
