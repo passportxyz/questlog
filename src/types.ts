@@ -85,10 +85,22 @@ export interface Attachment {
   created_at: Date;
 }
 
+// ── Notification Subscriptions ──────────────────────────────────
+
+export interface NotificationSubscription {
+  id: string;
+  user_id: string;
+  topic: string;
+  events: string[];
+  active: boolean;
+  created_at: Date;
+}
+
 // ── Side Effects ────────────────────────────────────────────────
 
 export type SideEffect =
   | { type: 'webhook'; eventType: string }
+  | { type: 'notify' }
   | { type: 'check_unblocks'; taskId: string }
   | { type: 'staleness_reset' };
 

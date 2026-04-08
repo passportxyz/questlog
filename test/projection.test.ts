@@ -26,7 +26,7 @@ describe('applyEvent', () => {
       const result = applyEvent(event);
 
       expect(result.taskUpdates).toEqual({});
-      expect(result.sideEffects).toEqual([{ type: 'webhook', eventType: 'created' }]);
+      expect(result.sideEffects).toEqual([{ type: 'webhook', eventType: 'created' }, { type: 'notify' }]);
     });
 
     it('adds staleness_reset when metadata.owner_id exists', () => {
@@ -39,6 +39,7 @@ describe('applyEvent', () => {
       expect(result.taskUpdates).toEqual({});
       expect(result.sideEffects).toEqual([
         { type: 'webhook', eventType: 'created' },
+        { type: 'notify' },
         { type: 'staleness_reset' },
       ]);
     });
@@ -50,7 +51,7 @@ describe('applyEvent', () => {
       const result = applyEvent(event);
 
       expect(result.taskUpdates).toEqual({ updated_at: event.created_at });
-      expect(result.sideEffects).toEqual([{ type: 'webhook', eventType: 'note' }]);
+      expect(result.sideEffects).toEqual([{ type: 'webhook', eventType: 'note' }, { type: 'notify' }]);
     });
   });
 
@@ -60,7 +61,7 @@ describe('applyEvent', () => {
       const result = applyEvent(event);
 
       expect(result.taskUpdates).toEqual({ updated_at: event.created_at });
-      expect(result.sideEffects).toEqual([{ type: 'webhook', eventType: 'progress' }]);
+      expect(result.sideEffects).toEqual([{ type: 'webhook', eventType: 'progress' }, { type: 'notify' }]);
     });
   });
 
@@ -78,6 +79,7 @@ describe('applyEvent', () => {
       });
       expect(result.sideEffects).toEqual([
         { type: 'webhook', eventType: 'handoff' },
+        { type: 'notify' },
         { type: 'staleness_reset' },
       ]);
     });
@@ -97,6 +99,7 @@ describe('applyEvent', () => {
       });
       expect(result.sideEffects).toEqual([
         { type: 'webhook', eventType: 'claimed' },
+        { type: 'notify' },
         { type: 'staleness_reset' },
       ]);
     });
@@ -108,7 +111,7 @@ describe('applyEvent', () => {
       const result = applyEvent(event);
 
       expect(result.taskUpdates).toEqual({ updated_at: event.created_at });
-      expect(result.sideEffects).toEqual([{ type: 'webhook', eventType: 'blocked' }]);
+      expect(result.sideEffects).toEqual([{ type: 'webhook', eventType: 'blocked' }, { type: 'notify' }]);
     });
   });
 
@@ -118,7 +121,7 @@ describe('applyEvent', () => {
       const result = applyEvent(event);
 
       expect(result.taskUpdates).toEqual({ updated_at: event.created_at });
-      expect(result.sideEffects).toEqual([{ type: 'webhook', eventType: 'unblocked' }]);
+      expect(result.sideEffects).toEqual([{ type: 'webhook', eventType: 'unblocked' }, { type: 'notify' }]);
     });
   });
 
@@ -134,7 +137,7 @@ describe('applyEvent', () => {
         priority: 5,
         updated_at: event.created_at,
       });
-      expect(result.sideEffects).toEqual([{ type: 'webhook', eventType: 'field_changed' }]);
+      expect(result.sideEffects).toEqual([{ type: 'webhook', eventType: 'field_changed' }, { type: 'notify' }]);
     });
 
     it('works with string field values', () => {
@@ -162,6 +165,7 @@ describe('applyEvent', () => {
       });
       expect(result.sideEffects).toEqual([
         { type: 'webhook', eventType: 'completed' },
+        { type: 'notify' },
         { type: 'check_unblocks', taskId: 'task-1' },
       ]);
     });
@@ -178,6 +182,7 @@ describe('applyEvent', () => {
       });
       expect(result.sideEffects).toEqual([
         { type: 'webhook', eventType: 'cancelled' },
+        { type: 'notify' },
         { type: 'check_unblocks', taskId: 'task-1' },
       ]);
     });

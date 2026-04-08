@@ -17,6 +17,7 @@ import { runMigrations } from './db/migrate.js';
 import { verifyToken } from './auth.js';
 import { AuthError } from './types.js';
 import { processSideEffects } from './webhooks.js';
+import { processNotification } from './ntfy.js';
 import { checkUnblocks } from './unblock.js';
 import { clearStaleAlert } from './staleness.js';
 
@@ -32,6 +33,8 @@ import { createAttachmentsRouter } from './attachments-router.js';
 import { attachFile } from './tools/attachments.js';
 import { generateAccessCode } from './access-codes.js';
 import { createBoardRouter, generateBoardCode } from './board-router.js';
+import { subscribeNotifications, listNotificationSubscriptions, unsubscribeNotifications } from './tools/notifications.js';
+import { NOTIFICATION_EVENTS } from './ntfy.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -122,6 +125,10 @@ function processSideEffectsFromResult(result: unknown): void {
         }
       }).catch((err) => {
         console.error('Unblock connection error:', err);
+      });
+    } else if (effect.type === 'notify' && event && task) {
+      processNotification(pool, event, task).catch((err) => {
+        console.error('Notification dispatch error:', err);
       });
     } else if (effect.type === 'staleness_reset' && task) {
       clearStaleAlert(task.id);
@@ -286,6 +293,43 @@ function createServer(): McpServer {
       const code = generateBoardCode(user.id, user.name);
       return { code, expires_in: '10 minutes', instructions: 'Enter this code at /board to access the Quest Log dashboard' };
     }),
+  );
+
+  // ── subscribe_notifications ────────────────────────────────────────
+
+  server.tool(
+    'subscribe_notifications',
+    `Subscribe to push notifications for task events via ntfy. Valid events: ${NOTIFICATION_EVENTS.join(', ')}. If you already have a subscription, this updates it.`,
+    {
+      events: z.array(z.string()).describe('Notification events to subscribe to'),
+    },
+    withClient(async (client, actorId, params) => {
+      return subscribeNotifications(client, actorId, params);
+    }, { write: true }),
+  );
+
+  // ── list_notification_subscriptions ────────────────────────────────
+
+  server.tool(
+    'list_notification_subscriptions',
+    'List your active notification subscriptions',
+    {},
+    withClient(async (client, actorId, _params) => {
+      return listNotificationSubscriptions(client, actorId);
+    }),
+  );
+
+  // ── unsubscribe_notifications ──────────────────────────────────────
+
+  server.tool(
+    'unsubscribe_notifications',
+    'Remove a notification subscription',
+    {
+      subscription_id: z.string().describe('The subscription ID to remove'),
+    },
+    withClient(async (client, actorId, params) => {
+      return unsubscribeNotifications(client, actorId, params);
+    }, { write: true }),
   );
 
   return server;

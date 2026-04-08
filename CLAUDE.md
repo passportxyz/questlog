@@ -11,6 +11,16 @@ ln -sf /app/.borg/persistent/ql /home/node/.ql
 npm install -g questlog-ai
 ```
 
+## Key Architecture Notes
+
+- **Webhooks are built-in**: `src/webhooks.ts` dispatches HMAC-signed POSTs on task events. Webhooks table in `migrations/004_create_webhooks.sql`. Registration via `src/tools/webhooks.ts`. Fire-and-forget with 10s timeout.
+- **Event-sourced**: Tasks use event sourcing with projections (`src/projection.ts`). Side effects (webhooks, unblocks, staleness) are emitted from projections.
+- **Auth codes**: Two systems — attachment access codes and board/device auth codes. Both short-lived, both in the `access_codes` table but with different scopes.
+- **Board UI**: Server-rendered from `src/board-router.ts` (not static files), light theme, GSAP animations, task detail modal. Auth via 30-day browser tokens.
+- **Production runs in Borg**: The questlog service is deployed via Borg's Docker infrastructure. Coordinate with the Borg thread (thread 935) for infra changes like adding new services to docker-compose.
+- **No agency in Quest Log**: Quest Log is a dumb task pipe — no AI, no workflows, no bot logic. Agents interact via MCP tools. Keep it simple.
+
+
 ## Mim Knowledge
 
 @.claude/knowledge/INSTRUCTIONS.md

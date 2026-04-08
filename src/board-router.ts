@@ -4,7 +4,9 @@ import type pg from 'pg';
 import type { Task, User, Event, Attachment } from './types.js';
 import { consumeCode, generateCode, generateAccessCode } from './access-codes.js';
 import { signToken, verifyToken } from './auth.js';
-import { getTaskById, getEventsByTaskId, getAttachmentsByTaskId } from './db/queries.js';
+import { getTaskById, getEventsByTaskId, getAttachmentsByTaskId, getNotificationSubscriptionsByUserId, insertNotificationSubscription, deleteNotificationSubscription, updateNotificationSubscription } from './db/queries.js';
+import crypto from 'node:crypto';
+import { NOTIFICATION_EVENTS } from './ntfy.js';
 
 const BOARD_CODE_TTL_MS = 10 * 60_000; // 10 minutes
 const BOARD_TOKEN_DAYS = 30;
@@ -150,6 +152,78 @@ export function createBoardRouter(pool: pg.Pool): Router {
         latestEvents,
         attachmentCounts,
       }));
+    } finally {
+      client.release();
+    }
+  });
+
+  // ── GET /board/notifications — list subscriptions ────────────────
+  router.get('/notifications', async (req: Request, res: Response) => {
+    const token = extractBoardToken(req);
+    if (!token) { res.status(401).json({ error: 'Not authenticated' }); return; }
+    let payload;
+    try { payload = verifyToken(token); } catch { res.status(401).json({ error: 'Invalid token' }); return; }
+
+    const client = await pool.connect();
+    try {
+      const subs = await getNotificationSubscriptionsByUserId(client, payload.sub);
+      res.json({ subscriptions: subs, available_events: NOTIFICATION_EVENTS });
+    } finally {
+      client.release();
+    }
+  });
+
+  // ── POST /board/notifications — create/update subscription ─────
+  router.post('/notifications', async (req: Request, res: Response) => {
+    const token = extractBoardToken(req);
+    if (!token) { res.status(401).json({ error: 'Not authenticated' }); return; }
+    let payload;
+    try { payload = verifyToken(token); } catch { res.status(401).json({ error: 'Invalid token' }); return; }
+
+    const { events } = req.body as { events?: string[] };
+    if (!events || !Array.isArray(events) || events.length === 0) {
+      res.status(400).json({ error: 'events array is required' });
+      return;
+    }
+
+    for (const evt of events) {
+      if (!NOTIFICATION_EVENTS.includes(evt as any)) {
+        res.status(400).json({ error: `Invalid event: ${evt}` });
+        return;
+      }
+    }
+
+    const client = await pool.connect();
+    try {
+      const existing = await getNotificationSubscriptionsByUserId(client, payload.sub);
+      if (existing.length > 0) {
+        const sub = await updateNotificationSubscription(client, existing[0].id, payload.sub, { events, active: true });
+        res.json({ subscription: sub });
+      } else {
+        const prefix = payload.sub.slice(0, 8);
+        const random = crypto.randomBytes(9).toString('base64url');
+        const topic = `ql-${prefix}-${random}`;
+        const sub = await insertNotificationSubscription(client, { user_id: payload.sub, topic, events });
+        res.json({ subscription: sub });
+      }
+    } finally {
+      client.release();
+    }
+  });
+
+  // ── DELETE /board/notifications/:id — remove subscription ──────
+  router.delete('/notifications/:id', async (req: Request, res: Response) => {
+    const token = extractBoardToken(req);
+    if (!token) { res.status(401).json({ error: 'Not authenticated' }); return; }
+    let payload;
+    try { payload = verifyToken(token); } catch { res.status(401).json({ error: 'Invalid token' }); return; }
+
+    const client = await pool.connect();
+    try {
+      await deleteNotificationSubscription(client, req.params.id as string, payload.sub);
+      res.json({ deleted: true });
+    } catch (err) {
+      res.status(404).json({ error: 'Subscription not found' });
     } finally {
       client.release();
     }
@@ -911,11 +985,236 @@ function renderBoard(data: BoardData): string {
     50% { opacity: 0.35; }
   }
 
+  /* Header actions */
+  .header-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+  }
+
+  /* Tab navigation */
+  .tab-nav {
+    display: flex;
+    gap: 0.25rem;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 0.2rem;
+  }
+
+  .tab-btn {
+    font-family: 'Inter', sans-serif;
+    font-size: 0.75rem;
+    font-weight: 500;
+    padding: 0.35rem 0.85rem;
+    border: none;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--text-dim);
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+  .tab-btn:hover { color: var(--text); }
+  .tab-btn.active { background: var(--surface); color: var(--text); box-shadow: var(--shadow-sm); font-weight: 600; }
+
+  .tab-panel { display: none; }
+  .tab-panel.active { display: block; }
+
+  /* Notifications panel */
+  .notif-container { max-width: 600px; }
+
+  .notif-header { margin-bottom: 1.5rem; }
+  .notif-header h2 { font-size: 1.1rem; font-weight: 700; margin-bottom: 0.3rem; }
+  .notif-subtitle { font-size: 0.85rem; color: var(--text-dim); line-height: 1.5; }
+  .notif-subtitle a { color: var(--accent); text-decoration: none; }
+  .notif-subtitle a:hover { text-decoration: underline; }
+
+  .notif-loading { color: var(--text-muted); font-size: 0.85rem; padding: 2rem 0; }
+
+  .notif-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1.25rem;
+    box-shadow: var(--shadow-sm);
+    margin-bottom: 1rem;
+  }
+
+  .notif-card h3 { font-size: 0.9rem; font-weight: 600; margin-bottom: 0.5rem; }
+
+  .notif-card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 1rem;
+  }
+
+  .notif-status-badge {
+    font-size: 0.7rem;
+    font-weight: 600;
+    padding: 0.2rem 0.6rem;
+    border-radius: 999px;
+    background: var(--green-soft);
+    color: var(--green);
+  }
+
+  .notif-delete-btn {
+    font-family: 'Inter', sans-serif;
+    font-size: 0.7rem;
+    padding: 0.3rem 0.7rem;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--surface);
+    color: var(--red);
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .notif-delete-btn:hover { background: var(--red-soft); border-color: var(--red); }
+
+  .notif-topic-row {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    margin-bottom: 0.75rem;
+  }
+
+  .notif-label {
+    font-size: 0.7rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-muted);
+  }
+
+  .notif-topic-value {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.8rem;
+    color: var(--accent);
+    background: var(--accent-soft);
+    padding: 0.2rem 0.5rem;
+    border-radius: 6px;
+    user-select: all;
+  }
+
+  .notif-events-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+  }
+
+  .notif-event-tag {
+    font-size: 0.65rem;
+    font-family: 'JetBrains Mono', monospace;
+    padding: 0.15rem 0.45rem;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    color: var(--text-dim);
+  }
+
+  .notif-setup-hint {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1.25rem;
+    box-shadow: var(--shadow-sm);
+  }
+
+  .notif-setup-hint h3 {
+    font-size: 0.8rem;
+    font-weight: 600;
+    margin-bottom: 0.75rem;
+    color: var(--text-dim);
+  }
+
+  .notif-setup-hint ol {
+    padding-left: 1.25rem;
+    font-size: 0.82rem;
+    color: var(--text-dim);
+    line-height: 1.8;
+  }
+
+  .notif-setup-hint code {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.75rem;
+    background: var(--accent-soft);
+    color: var(--accent);
+    padding: 0.15rem 0.4rem;
+    border-radius: 4px;
+    user-select: all;
+  }
+
+  .notif-setup-hint a { color: var(--accent); text-decoration: none; }
+  .notif-setup-hint a:hover { text-decoration: underline; }
+
+  .notif-form-hint { font-size: 0.82rem; color: var(--text-dim); margin-bottom: 1rem; }
+
+  .notif-event-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.5rem;
+    margin-bottom: 1.25rem;
+  }
+
+  .notif-event-option {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.5rem 0.65rem;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    cursor: pointer;
+    transition: all 0.15s;
+    font-size: 0.78rem;
+    color: var(--text-dim);
+  }
+  .notif-event-option:hover { border-color: var(--accent); }
+  .notif-event-option.selected { border-color: var(--accent); background: var(--accent-soft); color: var(--text); }
+  .notif-event-option input { display: none; }
+
+  .notif-event-check {
+    width: 16px;
+    height: 16px;
+    border: 1.5px solid var(--border);
+    border-radius: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    transition: all 0.15s;
+    font-size: 0.65rem;
+    color: transparent;
+  }
+  .notif-event-option.selected .notif-event-check {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: white;
+  }
+
+  .notif-save-btn {
+    width: 100%;
+    padding: 0.7rem;
+    background: var(--accent);
+    color: white;
+    border: none;
+    border-radius: 10px;
+    font-family: 'Inter', sans-serif;
+    font-size: 0.85rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: opacity 0.2s;
+  }
+  .notif-save-btn:hover { opacity: 0.9; }
+  .notif-save-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
   @media (max-width: 640px) {
     .container { padding: 1rem; }
     .card-grid { grid-template-columns: 1fr; }
     header h1 { font-size: 1.3rem; }
     .modal { padding: 1.25rem; margin: 1rem; max-height: 90vh; }
+    .notif-event-grid { grid-template-columns: 1fr; }
+    .header-actions { flex-direction: column; align-items: flex-end; gap: 0.4rem; }
   }
 </style>
 </head>
@@ -926,9 +1225,16 @@ function renderBoard(data: BoardData): string {
       <h1>Quest Log</h1>
       <p class="subtitle">${openTotal} open &middot; ${doneTasks.length} completed</p>
     </div>
-    <button class="logout-btn" onclick="logout()">Sign out</button>
+    <div class="header-actions">
+      <nav class="tab-nav">
+        <button class="tab-btn active" data-tab="board">Board</button>
+        <button class="tab-btn" data-tab="notifications">Notifications</button>
+      </nav>
+      <button class="logout-btn" onclick="logout()">Sign out</button>
+    </div>
   </header>
 
+  <div class="tab-panel active" id="panel-board">
   ${ownedTasks.length > 0 ? `
   <div class="section active">
     <div class="section-header">
@@ -961,6 +1267,50 @@ function renderBoard(data: BoardData): string {
 
   ${openTotal === 0 && doneTasks.length === 0 ? `
   <div class="empty">No tasks yet. Create one with your agent or the ql CLI.</div>` : ''}
+  </div>
+
+  <div class="tab-panel" id="panel-notifications">
+    <div class="notif-container">
+      <div class="notif-header">
+        <h2>Push Notifications</h2>
+        <p class="notif-subtitle">Get notified on your phone when task events happen via <a href="https://ntfy.sh" target="_blank">ntfy</a>.</p>
+      </div>
+
+      <div id="notif-loading" class="notif-loading">Loading...</div>
+      <div id="notif-content" style="display:none">
+        <div id="notif-active" style="display:none">
+          <div class="notif-card">
+            <div class="notif-card-header">
+              <span class="notif-status-badge">Active</span>
+              <button class="notif-delete-btn" id="notif-delete">Remove</button>
+            </div>
+            <div class="notif-topic-row">
+              <span class="notif-label">Topic</span>
+              <code class="notif-topic-value" id="notif-topic"></code>
+            </div>
+            <div class="notif-events-row" id="notif-events-list"></div>
+          </div>
+          <div class="notif-setup-hint">
+            <h3>Setup</h3>
+            <ol>
+              <li>Install the <a href="https://ntfy.sh" target="_blank">ntfy app</a> on your phone</li>
+              <li>Add a subscription to: <code id="notif-subscribe-url"></code></li>
+              <li>Done! You'll get push notifications for your selected events.</li>
+            </ol>
+          </div>
+        </div>
+
+        <div id="notif-setup" style="display:none">
+          <div class="notif-card">
+            <h3>Subscribe to events</h3>
+            <p class="notif-form-hint">Choose which events trigger a push notification:</p>
+            <div class="notif-event-grid" id="notif-event-checkboxes"></div>
+            <button class="notif-save-btn" id="notif-save">Enable Notifications</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
 </div>
 
 <!-- Task detail modal -->
@@ -1146,6 +1496,142 @@ function renderBoard(data: BoardData): string {
     localStorage.removeItem('ql_board_token');
     document.cookie = 'ql_board_token=; path=/board; max-age=0';
     window.location.reload();
+  }
+
+  // ── Tab switching ──────────────────────────────────────────
+  const tabBtns = document.querySelectorAll('.tab-btn');
+  const tabPanels = document.querySelectorAll('.tab-panel');
+
+  tabBtns.forEach(btn => {
+    btn.addEventListener('click', () => {
+      const tab = btn.dataset.tab;
+      tabBtns.forEach(b => b.classList.remove('active'));
+      tabPanels.forEach(p => p.classList.remove('active'));
+      btn.classList.add('active');
+      document.getElementById('panel-' + tab).classList.add('active');
+      if (tab === 'notifications') loadNotifications();
+    });
+  });
+
+  // ── Notifications ──────────────────────────────────────────
+  const EVENT_LABELS = {
+    assigned_to_me: 'Assigned to me',
+    task_completed: 'Task completed',
+    task_blocked: 'Task blocked',
+    task_unblocked: 'Task unblocked',
+    comment_added: 'Comment added',
+    field_changed: 'Field changed',
+  };
+
+  let notifLoaded = false;
+
+  async function loadNotifications() {
+    if (notifLoaded) return;
+    const loadingEl = document.getElementById('notif-loading');
+    const contentEl = document.getElementById('notif-content');
+
+    try {
+      const res = await fetch('/board/notifications', {
+        headers: { 'Authorization': 'Bearer ' + getToken() },
+      });
+      if (!res.ok) throw new Error('Failed to load');
+      const data = await res.json();
+
+      loadingEl.style.display = 'none';
+      contentEl.style.display = 'block';
+
+      if (data.subscriptions.length > 0) {
+        showActiveSubscription(data.subscriptions[0]);
+      } else {
+        showSetupForm(data.available_events);
+      }
+      notifLoaded = true;
+    } catch (err) {
+      loadingEl.textContent = 'Failed to load notifications.';
+    }
+  }
+
+  function showActiveSubscription(sub) {
+    document.getElementById('notif-active').style.display = 'block';
+    document.getElementById('notif-setup').style.display = 'none';
+
+    document.getElementById('notif-topic').textContent = sub.topic;
+    const ntfyBase = location.origin.replace(/:\\d+/, ':8080');
+    document.getElementById('notif-subscribe-url').textContent = ntfyBase + '/' + sub.topic;
+
+    const eventsEl = document.getElementById('notif-events-list');
+    eventsEl.innerHTML = sub.events.map(e =>
+      '<span class="notif-event-tag">' + esc(EVENT_LABELS[e] || e) + '</span>'
+    ).join('');
+
+    document.getElementById('notif-delete').onclick = async () => {
+      if (!confirm('Remove notification subscription?')) return;
+      await fetch('/board/notifications/' + sub.id, {
+        method: 'DELETE',
+        headers: { 'Authorization': 'Bearer ' + getToken() },
+      });
+      notifLoaded = false;
+      document.getElementById('notif-active').style.display = 'none';
+      loadNotifications();
+    };
+
+    gsap.from('#notif-active', { opacity: 0, y: 10, duration: 0.4, ease: 'power2.out' });
+  }
+
+  function showSetupForm(availableEvents) {
+    document.getElementById('notif-active').style.display = 'none';
+    document.getElementById('notif-setup').style.display = 'block';
+
+    const grid = document.getElementById('notif-event-checkboxes');
+    grid.innerHTML = availableEvents.map(evt => {
+      const label = EVENT_LABELS[evt] || evt.replace(/_/g, ' ');
+      return '<label class="notif-event-option selected" data-event="' + evt + '">' +
+        '<input type="checkbox" checked>' +
+        '<span class="notif-event-check">\\u2713</span>' +
+        '<span>' + esc(label) + '</span>' +
+        '</label>';
+    }).join('');
+
+    grid.querySelectorAll('.notif-event-option').forEach(opt => {
+      opt.addEventListener('click', (e) => {
+        e.preventDefault();
+        opt.classList.toggle('selected');
+        opt.querySelector('input').checked = opt.classList.contains('selected');
+      });
+    });
+
+    document.getElementById('notif-save').onclick = async () => {
+      const selected = [];
+      grid.querySelectorAll('.notif-event-option.selected').forEach(opt => {
+        selected.push(opt.dataset.event);
+      });
+      if (selected.length === 0) { alert('Select at least one event'); return; }
+
+      const btn = document.getElementById('notif-save');
+      btn.disabled = true;
+      btn.textContent = 'Saving...';
+
+      try {
+        const res = await fetch('/board/notifications', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': 'Bearer ' + getToken(),
+          },
+          body: JSON.stringify({ events: selected }),
+        });
+        if (!res.ok) throw new Error('Failed to save');
+        const data = await res.json();
+        showActiveSubscription(data.subscription);
+      } catch (err) {
+        alert('Failed to save notification subscription');
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Enable Notifications';
+      }
+    };
+
+    gsap.from('#notif-setup', { opacity: 0, y: 10, duration: 0.4, ease: 'power2.out' });
   }
 </script>
 </body>

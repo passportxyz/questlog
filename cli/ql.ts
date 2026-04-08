@@ -6,6 +6,7 @@ import { Command } from 'commander';
 import { registerAuthCommands } from './commands/auth.js';
 import { registerTaskCommands } from './commands/tasks.js';
 import { registerAdminCommands } from './commands/admin.js';
+import { registerNotificationCommands } from './commands/notifications.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(readFileSync(join(__dirname, '..', '..', 'package.json'), 'utf-8'));
@@ -21,6 +22,7 @@ program
 registerAuthCommands(program);
 registerTaskCommands(program);
 registerAdminCommands(program);
+registerNotificationCommands(program);
 
 // Global error handling
 program.exitOverride();

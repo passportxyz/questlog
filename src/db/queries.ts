@@ -8,6 +8,7 @@ import type {
   EventType,
   Webhook,
   Attachment,
+  NotificationSubscription,
 } from '../types.js';
 
 // ── Helpers ────────────────────────────────────────────────────────
@@ -570,4 +571,78 @@ export async function deleteUser(
     [userId],
   );
   if (rowCount === 0) throw new Error(`User not found: ${userId}`);
+}
+
+// ── Notification subscription queries ─────────────────────────────
+
+export async function insertNotificationSubscription(
+  client: pg.PoolClient,
+  params: {
+    user_id: string;
+    topic: string;
+    events: string[];
+  },
+): Promise<NotificationSubscription> {
+  const { rows } = await client.query<NotificationSubscription>(
+    `INSERT INTO notification_subscriptions (user_id, topic, events)
+     VALUES ($1, $2, $3)
+     RETURNING *`,
+    [params.user_id, params.topic, params.events],
+  );
+  return rows[0];
+}
+
+export async function getNotificationSubscriptionsByUserId(
+  client: pg.PoolClient,
+  userId: string,
+): Promise<NotificationSubscription[]> {
+  const { rows } = await client.query<NotificationSubscription>(
+    'SELECT * FROM notification_subscriptions WHERE user_id = $1 ORDER BY created_at ASC',
+    [userId],
+  );
+  return rows;
+}
+
+export async function deleteNotificationSubscription(
+  client: pg.PoolClient,
+  subscriptionId: string,
+  userId: string,
+): Promise<void> {
+  const { rowCount } = await client.query(
+    'DELETE FROM notification_subscriptions WHERE id = $1 AND user_id = $2',
+    [subscriptionId, userId],
+  );
+  if (rowCount === 0) throw new Error(`Subscription not found: ${subscriptionId}`);
+}
+
+export async function updateNotificationSubscription(
+  client: pg.PoolClient,
+  subscriptionId: string,
+  userId: string,
+  params: { events?: string[]; active?: boolean },
+): Promise<NotificationSubscription> {
+  const sets: string[] = [];
+  const values: unknown[] = [];
+  let idx = 1;
+
+  if (params.events !== undefined) {
+    sets.push(`events = $${idx++}`);
+    values.push(params.events);
+  }
+  if (params.active !== undefined) {
+    sets.push(`active = $${idx++}`);
+    values.push(params.active);
+  }
+
+  if (sets.length === 0) throw new Error('No fields to update');
+
+  values.push(subscriptionId, userId);
+  const { rows } = await client.query<NotificationSubscription>(
+    `UPDATE notification_subscriptions SET ${sets.join(', ')}
+     WHERE id = $${idx++} AND user_id = $${idx}
+     RETURNING *`,
+    values,
+  );
+  if (rows.length === 0) throw new Error(`Subscription not found: ${subscriptionId}`);
+  return rows[0];
 }
