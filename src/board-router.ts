@@ -2,8 +2,9 @@ import express, { Router } from 'express';
 import type { Request, Response } from 'express';
 import type pg from 'pg';
 import type { Task, User, Event, Attachment } from './types.js';
-import { consumeCode, generateCode } from './access-codes.js';
+import { consumeCode, generateCode, generateAccessCode } from './access-codes.js';
 import { signToken, verifyToken } from './auth.js';
+import { getTaskById, getEventsByTaskId, getAttachmentsByTaskId } from './db/queries.js';
 
 const BOARD_CODE_TTL_MS = 10 * 60_000; // 10 minutes
 const BOARD_TOKEN_DAYS = 30;
@@ -34,9 +35,50 @@ export function createBoardRouter(pool: pg.Pool): Router {
     res.json({ token, expires_in_days: BOARD_TOKEN_DAYS });
   });
 
-  // ── Auth check middleware for GET /board ─────────────────────────
+  // ── GET /board/task/:id — task detail JSON API ──────────────────
+  router.get('/task/:id', async (req: Request, res: Response) => {
+    const token = extractBoardToken(req);
+    if (!token) { res.status(401).json({ error: 'Not authenticated' }); return; }
+    try { verifyToken(token); } catch { res.status(401).json({ error: 'Invalid token' }); return; }
+
+    const client = await pool.connect();
+    try {
+      const task = await getTaskById(client, req.params.id as string);
+      if (!task) { res.status(404).json({ error: 'Task not found' }); return; }
+
+      const [events, attachments] = await Promise.all([
+        getEventsByTaskId(client, task.id),
+        getAttachmentsByTaskId(client, task.id),
+      ]);
+
+      // Fetch all users referenced
+      const actorIds = new Set<string>();
+      actorIds.add(task.creator_id);
+      if (task.owner_id) actorIds.add(task.owner_id);
+      for (const e of events) actorIds.add(e.actor_id);
+
+      const usersResult = await client.query<User>(
+        `SELECT * FROM users WHERE id = ANY($1)`,
+        [Array.from(actorIds)],
+      );
+      const users: Record<string, User> = {};
+      for (const u of usersResult.rows) users[u.id] = u;
+
+      // Generate access codes for attachments
+      const baseUrl = (process.env.PUBLIC_URL || '').replace(/\/+$/, '');
+      const attachmentsWithUrls = attachments.map(a => ({
+        ...a,
+        download_url: `${baseUrl}/attachments/${a.id}?code=${generateAccessCode(a.id)}`,
+      }));
+
+      res.json({ task, events, attachments: attachmentsWithUrls, users });
+    } finally {
+      client.release();
+    }
+  });
+
+  // ── GET /board — main board page ────────────────────────────────
   router.get('/', async (req: Request, res: Response) => {
-    // Check for JWT in cookie or Authorization header
     const token = extractBoardToken(req);
 
     if (!token) {
@@ -47,7 +89,6 @@ export function createBoardRouter(pool: pg.Pool): Router {
 
     try {
       const payload = verifyToken(token);
-      // Accept both board-scoped and full tokens
       if (payload.scope && payload.scope !== 'board') {
         res.setHeader('Content-Type', 'text/html; charset=utf-8');
         res.send(renderLoginPage('Invalid token scope'));
@@ -59,7 +100,6 @@ export function createBoardRouter(pool: pg.Pool): Router {
       return;
     }
 
-    // Token valid — render board
     const client = await pool.connect();
     try {
       const [openResult, doneResult, usersResult] = await Promise.all([
@@ -101,16 +141,11 @@ export function createBoardRouter(pool: pg.Pool): Router {
       const usersById: Record<string, User> = {};
       for (const u of usersResult.rows) usersById[u.id] = u;
 
-      const openTasks = openResult.rows;
-      const doneTasks = doneResult.rows;
-      const ownedTasks = openTasks.filter(t => t.owner_id);
-      const triageTasks = openTasks.filter(t => !t.owner_id);
-
       res.setHeader('Content-Type', 'text/html; charset=utf-8');
       res.send(renderBoard({
-        ownedTasks,
-        triageTasks,
-        doneTasks,
+        ownedTasks: openResult.rows.filter(t => t.owner_id),
+        triageTasks: openResult.rows.filter(t => !t.owner_id),
+        doneTasks: doneResult.rows,
         usersById,
         latestEvents,
         attachmentCounts,
@@ -137,24 +172,20 @@ export function generateBoardCode(userId: string, userName: string): string {
 // ── Token extraction ─────────────────────────────────────────────
 
 function extractBoardToken(req: Request): string | null {
-  // 1. Authorization header
   const authHeader = req.headers.authorization;
   if (authHeader?.startsWith('Bearer ')) return authHeader.slice(7);
 
-  // 2. Cookie
   const cookies = req.headers.cookie;
   if (cookies) {
     const match = cookies.match(/(?:^|;\s*)ql_board_token=([^\s;]+)/);
     if (match) return match[1];
   }
 
-  // 3. Query param (for bookmarkable links)
   if (req.query.token) return req.query.token as string;
-
   return null;
 }
 
-// ── Rendering ──────────────────────────────────────────────────────
+// ── Rendering helpers ────────────────────────────────────────────
 
 interface BoardData {
   ownedTasks: Task[];
@@ -211,7 +242,7 @@ function renderTaskCard(task: Task, data: BoardData, index: number): string {
     : '';
 
   return `
-    <div class="task-card ${statusClass} ${priorityClass}" style="--delay: ${index * 0.06}s">
+    <div class="task-card ${statusClass} ${priorityClass}" data-task-id="${esc(task.id)}" style="--delay: ${index * 0.06}s">
       <div class="card-header">
         <span class="task-id">${shortId}</span>
         ${owner ? `<span class="owner">${esc(owner.name)}</span>` : '<span class="owner triage-label">triage</span>'}
@@ -231,7 +262,7 @@ function renderTaskCard(task: Task, data: BoardData, index: number): string {
 
 function renderLoginPage(error?: string): string {
   const errorHtml = error
-    ? `<div class="error-msg" style="animation: fadeSlideUp 0.3s ease-out">${esc(error)}</div>`
+    ? `<div class="error-msg">${esc(error)}</div>`
     : '';
 
   return `<!DOCTYPE html>
@@ -241,21 +272,22 @@ function renderLoginPage(error?: string): string {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Quest Log</title>
 <style>
-  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
   * { margin: 0; padding: 0; box-sizing: border-box; }
 
   :root {
-    --bg: #0a0a0f;
-    --surface: #12121a;
-    --surface-hover: #1a1a26;
-    --border: #1e1e2e;
-    --border-glow: #2a2a40;
-    --text: #e0e0e8;
-    --text-dim: #6a6a80;
-    --text-muted: #3a3a50;
-    --accent: #7c6ff0;
-    --accent-dim: rgba(124, 111, 240, 0.15);
-    --red: #f87171;
+    --bg: #f8f8fa;
+    --surface: #ffffff;
+    --border: #e4e4e8;
+    --border-hover: #c8c8d0;
+    --text: #1a1a2e;
+    --text-dim: #6b6b80;
+    --text-muted: #a0a0b0;
+    --accent: #6c5ce7;
+    --accent-soft: rgba(108, 92, 231, 0.08);
+    --red: #e74c3c;
+    --shadow-sm: 0 1px 3px rgba(0,0,0,0.04), 0 1px 2px rgba(0,0,0,0.06);
+    --shadow-md: 0 4px 12px rgba(0,0,0,0.06), 0 2px 4px rgba(0,0,0,0.04);
   }
 
   body {
@@ -266,19 +298,6 @@ function renderLoginPage(error?: string): string {
     display: flex;
     align-items: center;
     justify-content: center;
-    overflow: hidden;
-  }
-
-  body::before {
-    content: '';
-    position: fixed;
-    inset: 0;
-    background-image:
-      linear-gradient(var(--border) 1px, transparent 1px),
-      linear-gradient(90deg, var(--border) 1px, transparent 1px);
-    background-size: 60px 60px;
-    opacity: 0.3;
-    pointer-events: none;
   }
 
   .login-card {
@@ -288,19 +307,14 @@ function renderLoginPage(error?: string): string {
     padding: 2.5rem;
     width: 100%;
     max-width: 380px;
-    position: relative;
-    z-index: 1;
-    animation: fadeSlideUp 0.5s ease-out;
+    box-shadow: var(--shadow-md);
+    animation: fadeIn 0.4s ease-out;
   }
 
   .login-card h1 {
     font-size: 1.5rem;
-    font-weight: 600;
-    letter-spacing: -0.03em;
-    background: linear-gradient(135deg, var(--text) 0%, var(--accent) 100%);
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-    background-clip: text;
+    font-weight: 700;
+    color: var(--text);
     margin-bottom: 0.5rem;
   }
 
@@ -326,18 +340,8 @@ function renderLoginPage(error?: string): string {
     outline: none;
     transition: border-color 0.2s, box-shadow 0.2s;
   }
-
-  .code-input::placeholder {
-    color: var(--text-muted);
-    letter-spacing: 0.05em;
-    font-size: 0.9rem;
-    text-transform: none;
-  }
-
-  .code-input:focus {
-    border-color: var(--accent);
-    box-shadow: 0 0 0 3px var(--accent-dim);
-  }
+  .code-input::placeholder { color: var(--text-muted); letter-spacing: 0.05em; font-size: 0.9rem; text-transform: none; }
+  .code-input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 
   .submit-btn {
     width: 100%;
@@ -349,11 +353,10 @@ function renderLoginPage(error?: string): string {
     border-radius: 10px;
     font-family: 'Inter', sans-serif;
     font-size: 0.9rem;
-    font-weight: 500;
+    font-weight: 600;
     cursor: pointer;
-    transition: opacity 0.2s, transform 0.1s;
+    transition: opacity 0.2s, transform 0.15s;
   }
-
   .submit-btn:hover { opacity: 0.9; }
   .submit-btn:active { transform: scale(0.98); }
   .submit-btn:disabled { opacity: 0.5; cursor: not-allowed; }
@@ -361,8 +364,8 @@ function renderLoginPage(error?: string): string {
   .error-msg {
     margin-top: 1rem;
     padding: 0.6rem 0.8rem;
-    background: rgba(248, 113, 113, 0.1);
-    border: 1px solid rgba(248, 113, 113, 0.2);
+    background: rgba(231, 76, 60, 0.08);
+    border: 1px solid rgba(231, 76, 60, 0.15);
     border-radius: 8px;
     color: var(--red);
     font-size: 0.8rem;
@@ -378,7 +381,6 @@ function renderLoginPage(error?: string): string {
     text-align: center;
     line-height: 1.6;
   }
-
   .hint code {
     font-family: 'JetBrains Mono', monospace;
     color: var(--text-dim);
@@ -388,10 +390,7 @@ function renderLoginPage(error?: string): string {
     font-size: 0.7rem;
   }
 
-  @keyframes fadeSlideUp {
-    from { opacity: 0; transform: translateY(16px); }
-    to { opacity: 1; transform: translateY(0); }
-  }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
 </style>
 </head>
 <body>
@@ -414,7 +413,6 @@ function renderLoginPage(error?: string): string {
   const input = document.getElementById('code');
   const btn = form.querySelector('button');
 
-  // Auto-format: insert dash after 4 chars
   input.addEventListener('input', () => {
     let v = input.value.replace(/[^A-Za-z0-9]/g, '').toUpperCase();
     if (v.length > 4) v = v.slice(0, 4) + '-' + v.slice(4, 8);
@@ -425,10 +423,8 @@ function renderLoginPage(error?: string): string {
     e.preventDefault();
     const code = input.value.trim();
     if (!code) return;
-
     btn.disabled = true;
     btn.textContent = 'Verifying...';
-
     try {
       const res = await fetch('/board/auth', {
         method: 'POST',
@@ -436,35 +432,20 @@ function renderLoginPage(error?: string): string {
         body: JSON.stringify({ code }),
       });
       const data = await res.json();
-      if (!res.ok) {
-        showError(data.error || 'Invalid code');
-        return;
-      }
-      // Store token and set cookie
+      if (!res.ok) { showError(data.error || 'Invalid code'); return; }
       localStorage.setItem('ql_board_token', data.token);
-      const maxAge = data.expires_in_days * 86400;
-      document.cookie = 'ql_board_token=' + data.token + '; path=/board; max-age=' + maxAge + '; SameSite=Lax';
+      document.cookie = 'ql_board_token=' + data.token + '; path=/board; max-age=' + (data.expires_in_days * 86400) + '; SameSite=Lax';
       window.location.reload();
-    } catch {
-      showError('Connection failed');
-    } finally {
-      btn.disabled = false;
-      btn.textContent = 'Enter';
-    }
+    } catch { showError('Connection failed'); }
+    finally { btn.disabled = false; btn.textContent = 'Enter'; }
   });
 
   function showError(msg) {
     let el = document.querySelector('.error-msg');
-    if (!el) {
-      el = document.createElement('div');
-      el.className = 'error-msg';
-      el.style.animation = 'fadeSlideUp 0.3s ease-out';
-      form.parentNode.insertBefore(el, form.nextSibling);
-    }
+    if (!el) { el = document.createElement('div'); el.className = 'error-msg'; form.parentNode.insertBefore(el, form.nextSibling); }
     el.textContent = msg;
   }
 
-  // On load, check if we have a stored token and set cookie if missing
   const stored = localStorage.getItem('ql_board_token');
   if (stored && !document.cookie.includes('ql_board_token')) {
     document.cookie = 'ql_board_token=' + stored + '; path=/board; max-age=' + (30 * 86400) + '; SameSite=Lax';
@@ -483,6 +464,7 @@ function renderBoard(data: BoardData): string {
   const ownedHtml = ownedTasks.map((t, i) => renderTaskCard(t, data, i)).join('');
   const triageHtml = triageTasks.map((t, i) => renderTaskCard(t, data, i)).join('');
   const doneHtml = doneTasks.map((t, i) => renderTaskCard(t, data, i)).join('');
+  const openTotal = ownedTasks.length + triageTasks.length;
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -490,30 +472,36 @@ function renderBoard(data: BoardData): string {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Quest Log</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js"><\/script>
 <style>
-  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
-
   * { margin: 0; padding: 0; box-sizing: border-box; }
 
   :root {
-    --bg: #0a0a0f;
-    --surface: #12121a;
-    --surface-hover: #1a1a26;
-    --border: #1e1e2e;
-    --border-glow: #2a2a40;
-    --text: #e0e0e8;
-    --text-dim: #6a6a80;
-    --text-muted: #3a3a50;
-    --accent: #7c6ff0;
-    --accent-dim: rgba(124, 111, 240, 0.15);
-    --green: #4ade80;
-    --green-dim: rgba(74, 222, 128, 0.12);
-    --amber: #fbbf24;
-    --amber-dim: rgba(251, 191, 36, 0.12);
-    --red: #f87171;
-    --red-dim: rgba(248, 113, 113, 0.1);
-    --triage: #38bdf8;
-    --triage-dim: rgba(56, 189, 248, 0.1);
+    --bg: #f5f5f7;
+    --surface: #ffffff;
+    --surface-hover: #fafafe;
+    --border: #e2e2ea;
+    --border-hover: #c8c8d4;
+    --text: #1a1a2e;
+    --text-dim: #5a5a72;
+    --text-muted: #9898ab;
+    --accent: #6c5ce7;
+    --accent-soft: rgba(108, 92, 231, 0.07);
+    --accent-medium: rgba(108, 92, 231, 0.12);
+    --green: #00b894;
+    --green-soft: rgba(0, 184, 148, 0.08);
+    --amber: #e17055;
+    --amber-soft: rgba(225, 112, 85, 0.08);
+    --red: #d63031;
+    --red-soft: rgba(214, 48, 49, 0.06);
+    --triage: #0984e3;
+    --triage-soft: rgba(9, 132, 227, 0.07);
+    --shadow-sm: 0 1px 3px rgba(0,0,0,0.03), 0 1px 2px rgba(0,0,0,0.04);
+    --shadow-md: 0 4px 14px rgba(0,0,0,0.05), 0 2px 6px rgba(0,0,0,0.03);
+    --shadow-lg: 0 10px 30px rgba(0,0,0,0.08), 0 4px 10px rgba(0,0,0,0.04);
+    --radius: 12px;
   }
 
   body {
@@ -521,112 +509,88 @@ function renderBoard(data: BoardData): string {
     background: var(--bg);
     color: var(--text);
     min-height: 100vh;
-    overflow-x: hidden;
-  }
-
-  /* Subtle grid bg */
-  body::before {
-    content: '';
-    position: fixed;
-    inset: 0;
-    background-image:
-      linear-gradient(var(--border) 1px, transparent 1px),
-      linear-gradient(90deg, var(--border) 1px, transparent 1px);
-    background-size: 60px 60px;
-    opacity: 0.3;
-    pointer-events: none;
-    z-index: 0;
+    -webkit-font-smoothing: antialiased;
   }
 
   .container {
     max-width: 1200px;
     margin: 0 auto;
     padding: 2rem 1.5rem;
-    position: relative;
-    z-index: 1;
   }
 
   /* Header */
   header {
-    margin-bottom: 3rem;
-    animation: fadeSlideDown 0.6s ease-out;
     display: flex;
     justify-content: space-between;
     align-items: flex-start;
+    margin-bottom: 2.5rem;
   }
 
   header h1 {
-    font-size: 1.75rem;
-    font-weight: 600;
+    font-size: 1.6rem;
+    font-weight: 700;
+    color: var(--text);
     letter-spacing: -0.03em;
-    background: linear-gradient(135deg, var(--text) 0%, var(--accent) 100%);
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-    background-clip: text;
   }
 
-  header p {
-    color: var(--text-dim);
-    font-size: 0.875rem;
+  header .subtitle {
+    color: var(--text-muted);
+    font-size: 0.85rem;
     margin-top: 0.25rem;
   }
 
   .logout-btn {
-    background: none;
+    background: var(--surface);
     border: 1px solid var(--border);
     color: var(--text-dim);
     font-family: 'Inter', sans-serif;
     font-size: 0.75rem;
-    padding: 0.4rem 0.8rem;
-    border-radius: 6px;
+    padding: 0.4rem 0.9rem;
+    border-radius: 8px;
     cursor: pointer;
     transition: all 0.2s;
+    box-shadow: var(--shadow-sm);
   }
-  .logout-btn:hover {
-    border-color: var(--border-glow);
-    color: var(--text);
-  }
+  .logout-btn:hover { border-color: var(--border-hover); color: var(--text); box-shadow: var(--shadow-md); }
 
   /* Sections */
-  .section {
-    margin-bottom: 2.5rem;
-  }
+  .section { margin-bottom: 2.5rem; }
 
   .section-header {
     display: flex;
     align-items: center;
-    gap: 0.75rem;
+    gap: 0.6rem;
     margin-bottom: 1rem;
-    padding-bottom: 0.75rem;
+    padding-bottom: 0.6rem;
     border-bottom: 1px solid var(--border);
   }
 
   .section-header h2 {
-    font-size: 0.85rem;
-    font-weight: 500;
+    font-size: 0.8rem;
+    font-weight: 600;
     text-transform: uppercase;
-    letter-spacing: 0.1em;
+    letter-spacing: 0.08em;
     color: var(--text-dim);
   }
 
   .section-header .count {
     font-family: 'JetBrains Mono', monospace;
-    font-size: 0.75rem;
+    font-size: 0.7rem;
     padding: 0.15rem 0.5rem;
     border-radius: 999px;
-    background: var(--accent-dim);
+    background: var(--accent-soft);
     color: var(--accent);
+    font-weight: 500;
   }
 
   .section-header .dot {
     width: 8px;
     height: 8px;
     border-radius: 50%;
-    animation: pulse 2s ease-in-out infinite;
   }
 
-  .section.active .dot { background: var(--green); box-shadow: 0 0 8px var(--green); }
-  .section.triage .dot { background: var(--triage); box-shadow: 0 0 8px var(--triage); }
+  .section.active .dot { background: var(--green); box-shadow: 0 0 6px rgba(0, 184, 148, 0.4); animation: pulse 2.5s ease-in-out infinite; }
+  .section.triage .dot { background: var(--triage); box-shadow: 0 0 6px rgba(9, 132, 227, 0.3); animation: pulse 2.5s ease-in-out infinite; }
   .section.done .dot { background: var(--text-muted); }
 
   /* Card grid */
@@ -640,38 +604,29 @@ function renderBoard(data: BoardData): string {
   .task-card {
     background: var(--surface);
     border: 1px solid var(--border);
-    border-radius: 10px;
+    border-radius: var(--radius);
     padding: 1rem 1.15rem;
-    cursor: default;
-    transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
-    animation: fadeSlideUp 0.5s ease-out both;
-    animation-delay: var(--delay);
+    cursor: pointer;
     position: relative;
     overflow: hidden;
+    box-shadow: var(--shadow-sm);
+    opacity: 0;
+    transform: translateY(12px);
+    will-change: transform, box-shadow;
   }
 
   .task-card::before {
     content: '';
     position: absolute;
-    left: 0;
-    top: 0;
-    bottom: 0;
+    left: 0; top: 0; bottom: 0;
     width: 3px;
     border-radius: 3px 0 0 3px;
-    transition: opacity 0.25s;
   }
 
   .task-card.status-active::before { background: var(--green); }
   .task-card.status-triage::before { background: var(--triage); }
-  .task-card.status-done::before { background: var(--text-muted); opacity: 0.5; }
-  .task-card.status-cancelled::before { background: var(--red); opacity: 0.4; }
-
-  .task-card:hover {
-    border-color: var(--border-glow);
-    background: var(--surface-hover);
-    transform: translateY(-2px);
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3), 0 0 0 1px var(--border-glow);
-  }
+  .task-card.status-done::before { background: var(--text-muted); opacity: 0.4; }
+  .task-card.status-cancelled::before { background: var(--red); opacity: 0.3; }
 
   .task-card.priority-0 { border-left: 3px solid var(--red); }
   .task-card.priority-1 { border-left: 3px solid var(--amber); }
@@ -685,123 +640,282 @@ function renderBoard(data: BoardData): string {
 
   .task-id {
     font-family: 'JetBrains Mono', monospace;
-    font-size: 0.7rem;
+    font-size: 0.65rem;
     color: var(--text-muted);
   }
 
   .owner {
-    font-size: 0.75rem;
-    font-weight: 500;
+    font-size: 0.7rem;
+    font-weight: 600;
     color: var(--accent);
-    padding: 0.1rem 0.5rem;
-    background: var(--accent-dim);
+    padding: 0.12rem 0.5rem;
+    background: var(--accent-soft);
     border-radius: 999px;
   }
-
-  .owner.triage-label {
-    color: var(--triage);
-    background: var(--triage-dim);
-  }
+  .owner.triage-label { color: var(--triage); background: var(--triage-soft); }
 
   .task-title {
-    font-size: 0.95rem;
-    font-weight: 500;
-    line-height: 1.4;
-    margin-bottom: 0.6rem;
+    font-size: 0.9rem;
+    font-weight: 600;
+    line-height: 1.45;
+    margin-bottom: 0.55rem;
     letter-spacing: -0.01em;
+    color: var(--text);
   }
 
   .card-meta {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: 0.4rem;
-    font-size: 0.7rem;
+    gap: 0.35rem;
+    font-size: 0.65rem;
     color: var(--text-dim);
   }
 
   .tag {
-    padding: 0.1rem 0.4rem;
-    background: var(--border);
-    border-radius: 4px;
+    padding: 0.12rem 0.4rem;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 5px;
     font-family: 'JetBrains Mono', monospace;
-    font-size: 0.65rem;
+    font-size: 0.6rem;
+    color: var(--text-dim);
   }
 
-  .attachment-count {
-    color: var(--amber);
-  }
+  .attachment-count { color: var(--amber); font-weight: 500; }
 
   .latest-event {
-    margin-top: 0.6rem;
-    padding-top: 0.5rem;
+    margin-top: 0.55rem;
+    padding-top: 0.45rem;
     border-top: 1px solid var(--border);
     display: flex;
     align-items: center;
-    gap: 0.5rem;
-    font-size: 0.7rem;
+    gap: 0.4rem;
+    font-size: 0.65rem;
   }
 
   .event-type {
     font-family: 'JetBrains Mono', monospace;
     color: var(--accent);
-    font-size: 0.65rem;
+    font-size: 0.6rem;
     padding: 0.1rem 0.35rem;
-    background: var(--accent-dim);
-    border-radius: 3px;
+    background: var(--accent-soft);
+    border-radius: 4px;
+    font-weight: 500;
   }
 
   .event-actor { color: var(--text-dim); }
   .event-time { color: var(--text-muted); margin-left: auto; }
 
   .event-body {
-    font-size: 0.75rem;
+    font-size: 0.7rem;
     color: var(--text-dim);
-    margin-top: 0.4rem;
+    margin-top: 0.35rem;
     line-height: 1.5;
-    max-height: 3em;
+    max-height: 2.8em;
     overflow: hidden;
     text-overflow: ellipsis;
   }
 
   .status-done .task-title,
-  .status-cancelled .task-title {
-    opacity: 0.5;
-  }
+  .status-cancelled .task-title { opacity: 0.45; }
+  .status-cancelled .task-title { text-decoration: line-through; }
 
-  .status-cancelled .task-title {
-    text-decoration: line-through;
-  }
-
-  /* Empty state */
   .empty {
     color: var(--text-muted);
     font-size: 0.85rem;
     font-style: italic;
-    padding: 1rem 0;
+    padding: 1.5rem 0;
   }
+
+  /* Modal overlay */
+  .modal-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.25);
+    backdrop-filter: blur(4px);
+    z-index: 100;
+    align-items: center;
+    justify-content: center;
+    padding: 2rem;
+  }
+  .modal-overlay.open { display: flex; }
+
+  .modal {
+    background: var(--surface);
+    border-radius: 16px;
+    width: 100%;
+    max-width: 640px;
+    max-height: 85vh;
+    overflow-y: auto;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.12), 0 8px 20px rgba(0,0,0,0.06);
+    padding: 2rem;
+    position: relative;
+  }
+
+  .modal-close {
+    position: absolute;
+    top: 1rem;
+    right: 1rem;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    width: 32px;
+    height: 32px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    color: var(--text-dim);
+    font-size: 1rem;
+    transition: all 0.15s;
+  }
+  .modal-close:hover { background: var(--border); color: var(--text); }
+
+  .modal-loading {
+    text-align: center;
+    padding: 3rem;
+    color: var(--text-muted);
+    font-size: 0.85rem;
+  }
+
+  .modal h2 {
+    font-size: 1.15rem;
+    font-weight: 700;
+    margin-bottom: 1rem;
+    padding-right: 2.5rem;
+    line-height: 1.4;
+  }
+
+  .modal-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+    margin-bottom: 1.25rem;
+    font-size: 0.8rem;
+  }
+
+  .modal-meta .meta-item {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+  }
+
+  .meta-label { color: var(--text-muted); font-weight: 500; }
+  .meta-value { color: var(--text-dim); }
+  .meta-value.status-open { color: var(--green); font-weight: 600; }
+  .meta-value.status-done { color: var(--text-muted); }
+  .meta-value.status-cancelled { color: var(--red); }
+
+  /* Attachments in modal */
+  .modal-section {
+    margin-top: 1.5rem;
+    padding-top: 1rem;
+    border-top: 1px solid var(--border);
+  }
+
+  .modal-section h3 {
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-dim);
+    margin-bottom: 0.75rem;
+  }
+
+  .attachment-item {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.5rem 0.65rem;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    margin-bottom: 0.4rem;
+    font-size: 0.8rem;
+    transition: all 0.15s;
+    text-decoration: none;
+    color: var(--text);
+  }
+  .attachment-item:hover { border-color: var(--accent); background: var(--accent-soft); }
+
+  .attachment-icon {
+    width: 28px;
+    height: 28px;
+    background: var(--accent-soft);
+    border-radius: 6px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--accent);
+    font-size: 0.7rem;
+    font-weight: 600;
+    flex-shrink: 0;
+  }
+
+  .attachment-info { flex: 1; min-width: 0; }
+  .attachment-name { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .attachment-desc { font-size: 0.7rem; color: var(--text-muted); margin-top: 0.1rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .attachment-size { font-size: 0.65rem; color: var(--text-muted); font-family: 'JetBrains Mono', monospace; flex-shrink: 0; }
+
+  /* Events timeline in modal */
+  .event-item {
+    display: flex;
+    gap: 0.6rem;
+    padding: 0.6rem 0;
+    border-bottom: 1px solid var(--bg);
+    font-size: 0.8rem;
+  }
+  .event-item:last-child { border-bottom: none; }
+
+  .event-dot-wrap {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding-top: 0.35rem;
+    flex-shrink: 0;
+  }
+  .event-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--accent);
+    flex-shrink: 0;
+  }
+  .event-line {
+    width: 1px;
+    flex: 1;
+    background: var(--border);
+    margin-top: 0.3rem;
+  }
+
+  .event-content { flex: 1; min-width: 0; }
+  .event-header { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; }
+  .event-type-tag {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.65rem;
+    font-weight: 500;
+    color: var(--accent);
+    background: var(--accent-soft);
+    padding: 0.1rem 0.4rem;
+    border-radius: 4px;
+  }
+  .event-actor-name { font-weight: 500; color: var(--text-dim); font-size: 0.75rem; }
+  .event-timestamp { color: var(--text-muted); font-size: 0.7rem; margin-left: auto; }
+  .event-body-text { margin-top: 0.3rem; color: var(--text-dim); line-height: 1.55; font-size: 0.8rem; white-space: pre-wrap; word-break: break-word; }
 
   /* Animations */
-  @keyframes fadeSlideUp {
-    from { opacity: 0; transform: translateY(12px); }
-    to { opacity: 1; transform: translateY(0); }
-  }
-
-  @keyframes fadeSlideDown {
-    from { opacity: 0; transform: translateY(-12px); }
-    to { opacity: 1; transform: translateY(0); }
-  }
-
   @keyframes pulse {
     0%, 100% { opacity: 1; }
-    50% { opacity: 0.4; }
+    50% { opacity: 0.35; }
   }
 
-  /* Responsive */
   @media (max-width: 640px) {
     .container { padding: 1rem; }
     .card-grid { grid-template-columns: 1fr; }
-    header h1 { font-size: 1.35rem; }
+    header h1 { font-size: 1.3rem; }
+    .modal { padding: 1.25rem; margin: 1rem; max-height: 90vh; }
   }
 </style>
 </head>
@@ -810,7 +924,7 @@ function renderBoard(data: BoardData): string {
   <header>
     <div>
       <h1>Quest Log</h1>
-      <p>${openCount(ownedTasks, triageTasks)} open &middot; ${doneTasks.length} completed</p>
+      <p class="subtitle">${openTotal} open &middot; ${doneTasks.length} completed</p>
     </div>
     <button class="logout-btn" onclick="logout()">Sign out</button>
   </header>
@@ -845,10 +959,189 @@ function renderBoard(data: BoardData): string {
     <div class="card-grid">${doneHtml}</div>
   </div>` : ''}
 
-  ${ownedTasks.length === 0 && triageTasks.length === 0 && doneTasks.length === 0 ? `
+  ${openTotal === 0 && doneTasks.length === 0 ? `
   <div class="empty">No tasks yet. Create one with your agent or the ql CLI.</div>` : ''}
 </div>
+
+<!-- Task detail modal -->
+<div class="modal-overlay" id="modal-overlay">
+  <div class="modal" id="modal">
+    <button class="modal-close" id="modal-close">&times;</button>
+    <div id="modal-content">
+      <div class="modal-loading">Loading...</div>
+    </div>
+  </div>
+</div>
+
 <script>
+  // ── GSAP entrance animations ──────────────────────────────
+  gsap.set('.task-card', { opacity: 0, y: 16 });
+  gsap.to('.task-card', {
+    opacity: 1, y: 0,
+    duration: 0.5,
+    stagger: 0.06,
+    ease: 'back.out(1.4)',
+    delay: 0.1,
+  });
+
+  gsap.from('header', { opacity: 0, y: -12, duration: 0.5, ease: 'power2.out' });
+  gsap.from('.section-header', { opacity: 0, x: -10, duration: 0.4, stagger: 0.1, ease: 'power2.out', delay: 0.2 });
+
+  // ── Card hover animations ────────────────────────────────
+  document.querySelectorAll('.task-card').forEach(card => {
+    card.addEventListener('mouseenter', () => {
+      gsap.to(card, {
+        y: -4,
+        scale: 1.015,
+        boxShadow: '0 8px 24px rgba(0,0,0,0.08), 0 4px 8px rgba(0,0,0,0.04)',
+        duration: 0.35,
+        ease: 'back.out(2)',
+      });
+    });
+    card.addEventListener('mouseleave', () => {
+      gsap.to(card, {
+        y: 0,
+        scale: 1,
+        boxShadow: '0 1px 3px rgba(0,0,0,0.03), 0 1px 2px rgba(0,0,0,0.04)',
+        duration: 0.4,
+        ease: 'power2.out',
+      });
+    });
+  });
+
+  // ── Modal ─────────────────────────────────────────────────
+  const overlay = document.getElementById('modal-overlay');
+  const modal = document.getElementById('modal');
+  const modalContent = document.getElementById('modal-content');
+  const modalClose = document.getElementById('modal-close');
+
+  function getToken() {
+    return localStorage.getItem('ql_board_token') || '';
+  }
+
+  function formatBytes(bytes) {
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
+    return (bytes / 1048576).toFixed(1) + ' MB';
+  }
+
+  function fileExt(filename) {
+    const parts = filename.split('.');
+    return parts.length > 1 ? parts.pop().toUpperCase().slice(0, 4) : '?';
+  }
+
+  function timeAgo(dateStr) {
+    const seconds = Math.floor((Date.now() - new Date(dateStr).getTime()) / 1000);
+    if (seconds < 60) return 'just now';
+    const mins = Math.floor(seconds / 60);
+    if (mins < 60) return mins + 'm ago';
+    const hrs = Math.floor(mins / 60);
+    if (hrs < 24) return hrs + 'h ago';
+    const days = Math.floor(hrs / 24);
+    return days + 'd ago';
+  }
+
+  function esc(s) {
+    const d = document.createElement('div');
+    d.textContent = s;
+    return d.innerHTML;
+  }
+
+  async function openTask(taskId) {
+    modalContent.innerHTML = '<div class="modal-loading">Loading...</div>';
+    overlay.classList.add('open');
+    gsap.fromTo(modal, { opacity: 0, scale: 0.92, y: 20 }, { opacity: 1, scale: 1, y: 0, duration: 0.4, ease: 'back.out(1.6)' });
+    gsap.fromTo(overlay, { backgroundColor: 'rgba(0,0,0,0)' }, { backgroundColor: 'rgba(0,0,0,0.25)', duration: 0.3 });
+
+    try {
+      const res = await fetch('/board/task/' + taskId, {
+        headers: { 'Authorization': 'Bearer ' + getToken() },
+      });
+      if (!res.ok) throw new Error('Failed to load task');
+      const data = await res.json();
+      renderTaskDetail(data);
+    } catch (err) {
+      modalContent.innerHTML = '<div class="modal-loading">Failed to load task details.</div>';
+    }
+  }
+
+  function renderTaskDetail(data) {
+    const { task, events, attachments, users } = data;
+    const statusClass = 'status-' + task.status;
+    const owner = task.owner_id ? users[task.owner_id] : null;
+    const creator = users[task.creator_id];
+
+    let html = '<h2>' + esc(task.title) + '</h2>';
+    html += '<div class="modal-meta">';
+    html += '<div class="meta-item"><span class="meta-label">Status</span><span class="meta-value ' + statusClass + '">' + task.status + '</span></div>';
+    if (owner) html += '<div class="meta-item"><span class="meta-label">Owner</span><span class="meta-value">' + esc(owner.name) + '</span></div>';
+    if (creator) html += '<div class="meta-item"><span class="meta-label">Creator</span><span class="meta-value">' + esc(creator.name) + '</span></div>';
+    if (task.priority != null) html += '<div class="meta-item"><span class="meta-label">Priority</span><span class="meta-value">P' + task.priority + '</span></div>';
+    if (task.due_date) html += '<div class="meta-item"><span class="meta-label">Due</span><span class="meta-value">' + new Date(task.due_date).toLocaleDateString() + '</span></div>';
+    if (task.tags && task.tags.length) html += '<div class="meta-item"><span class="meta-label">Tags</span><span class="meta-value">' + task.tags.map(t => '<span class="tag">' + esc(t) + '</span>').join(' ') + '</span></div>';
+    html += '<div class="meta-item"><span class="meta-label">Created</span><span class="meta-value">' + timeAgo(task.created_at) + '</span></div>';
+    html += '</div>';
+
+    // Attachments
+    if (attachments.length > 0) {
+      html += '<div class="modal-section"><h3>Attachments</h3>';
+      for (const a of attachments) {
+        html += '<a href="' + esc(a.download_url) + '" target="_blank" class="attachment-item">';
+        html += '<div class="attachment-icon">' + fileExt(a.filename) + '</div>';
+        html += '<div class="attachment-info">';
+        html += '<div class="attachment-name">' + esc(a.filename) + '</div>';
+        if (a.description) html += '<div class="attachment-desc">' + esc(a.description) + '</div>';
+        html += '</div>';
+        html += '<span class="attachment-size">' + formatBytes(a.size_bytes) + '</span>';
+        html += '</a>';
+      }
+      html += '</div>';
+    }
+
+    // Events timeline
+    if (events.length > 0) {
+      html += '<div class="modal-section"><h3>Activity</h3>';
+      for (let i = 0; i < events.length; i++) {
+        const e = events[i];
+        const actor = users[e.actor_id];
+        const isLast = i === events.length - 1;
+        html += '<div class="event-item">';
+        html += '<div class="event-dot-wrap"><div class="event-dot"></div>' + (isLast ? '' : '<div class="event-line"></div>') + '</div>';
+        html += '<div class="event-content">';
+        html += '<div class="event-header">';
+        html += '<span class="event-type-tag">' + esc(e.event_type) + '</span>';
+        if (actor) html += '<span class="event-actor-name">' + esc(actor.name) + '</span>';
+        html += '<span class="event-timestamp">' + timeAgo(e.created_at) + '</span>';
+        html += '</div>';
+        if (e.body) html += '<div class="event-body-text">' + esc(e.body) + '</div>';
+        html += '</div></div>';
+      }
+      html += '</div>';
+    }
+
+    modalContent.innerHTML = html;
+
+    // Animate modal content in
+    gsap.from(modalContent.children, { opacity: 0, y: 8, stagger: 0.04, duration: 0.3, ease: 'power2.out' });
+  }
+
+  function closeModal() {
+    gsap.to(modal, { opacity: 0, scale: 0.95, y: 10, duration: 0.25, ease: 'power2.in' });
+    gsap.to(overlay, { backgroundColor: 'rgba(0,0,0,0)', duration: 0.25, onComplete: () => overlay.classList.remove('open') });
+  }
+
+  modalClose.addEventListener('click', closeModal);
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) closeModal(); });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && overlay.classList.contains('open')) closeModal(); });
+
+  // Click handlers for task cards
+  document.querySelectorAll('.task-card').forEach(card => {
+    card.addEventListener('click', () => {
+      const taskId = card.dataset.taskId;
+      if (taskId) openTask(taskId);
+    });
+  });
+
   function logout() {
     localStorage.removeItem('ql_board_token');
     document.cookie = 'ql_board_token=; path=/board; max-age=0';
@@ -857,8 +1150,4 @@ function renderBoard(data: BoardData): string {
 </script>
 </body>
 </html>`;
-}
-
-function openCount(owned: Task[], triage: Task[]): number {
-  return owned.length + triage.length;
 }

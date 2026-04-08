@@ -16,6 +16,8 @@ import {
   authCall,
   authCallAuthenticated,
   getServerUrl,
+  createMcpClient,
+  callTool,
   KEY_PATH,
   PUBKEY_PATH,
   QL_DIR,
@@ -416,5 +418,31 @@ export function registerAuthCommands(program: Command): void {
       console.log(`  Token:   saved to ~/.ql/token`);
       console.log();
       console.log(`Next: ql install`);
+    });
+
+  // ── ql board-code ──────────────────────────────────────────
+
+  program
+    .command('board-code')
+    .description('Generate a code to access the board UI in a browser')
+    .action(async () => {
+      const config = await loadConfig();
+      const serverUrl = config.server_url ?? '(unknown)';
+      const host = serverUrl.replace(/\/mcp$/, '');
+
+      const client = await createMcpClient();
+      try {
+        const result = await callTool(client, 'generate_board_code') as {
+          code: string;
+          expires_in: string;
+        };
+
+        console.log(`Board code: ${result.code}`);
+        console.log(`Expires: ${result.expires_in}`);
+        console.log();
+        console.log(`Open ${host}/board and enter the code.`);
+      } finally {
+        await client.close();
+      }
     });
 }
