@@ -1,94 +1,24 @@
 import pg from 'pg';
 import type { Event, Task } from './types.js';
 import { getNotificationSubscriptionsByUserId } from './db/queries.js';
+import { resolveEvent, VIRTUAL_EVENTS } from './event-resolver.js';
+import type { VirtualEvent } from './event-resolver.js';
+
+// Re-export for consumers that imported from here
+export { VIRTUAL_EVENTS as NOTIFICATION_EVENTS } from './event-resolver.js';
+export type { VirtualEvent as NotificationEvent } from './event-resolver.js';
 
 // ── Configuration ──────────────────────────────────────────────────
 
 const NTFY_URL = process.env.NTFY_URL || '';
 const DEBOUNCE_MS = parseInt(process.env.NTFY_DEBOUNCE_MS || '120000', 10); // 2 min default
 
-// ── Virtual event types (user-facing) ──────────────────────────────
-
-export const NOTIFICATION_EVENTS = [
-  'assigned_to_me',
-  'task_completed',
-  'task_blocked',
-  'task_unblocked',
-  'comment_added',
-  'field_changed',
-] as const;
-
-export type NotificationEvent = (typeof NOTIFICATION_EVENTS)[number];
-
-// ── Event → notification routing ───────────────────────────────────
-
-interface NotificationTarget {
-  userId: string;
-  virtualEvent: NotificationEvent;
-}
-
-/**
- * Determine who should be notified and for what virtual event.
- * Returns null if nobody should be notified (self-action).
- */
-function resolveTarget(event: Event, task: Task): NotificationTarget | null {
-  switch (event.event_type) {
-    case 'created': {
-      const ownerId = event.metadata.owner_id as string | undefined;
-      if (ownerId && ownerId !== event.actor_id) {
-        return { userId: ownerId, virtualEvent: 'assigned_to_me' };
-      }
-      return null;
-    }
-    case 'handoff': {
-      const toUserId = event.metadata.to_user_id as string;
-      if (toUserId !== event.actor_id) {
-        return { userId: toUserId, virtualEvent: 'assigned_to_me' };
-      }
-      return null;
-    }
-    case 'completed':
-    case 'cancelled': {
-      if (task.owner_id && task.owner_id !== event.actor_id) {
-        return { userId: task.owner_id, virtualEvent: 'task_completed' };
-      }
-      return null;
-    }
-    case 'blocked': {
-      if (task.owner_id && task.owner_id !== event.actor_id) {
-        return { userId: task.owner_id, virtualEvent: 'task_blocked' };
-      }
-      return null;
-    }
-    case 'unblocked': {
-      if (task.owner_id && task.owner_id !== event.actor_id) {
-        return { userId: task.owner_id, virtualEvent: 'task_unblocked' };
-      }
-      return null;
-    }
-    case 'note': {
-      if (task.owner_id && task.owner_id !== event.actor_id) {
-        return { userId: task.owner_id, virtualEvent: 'comment_added' };
-      }
-      return null;
-    }
-    case 'field_changed': {
-      if (task.owner_id && task.owner_id !== event.actor_id) {
-        return { userId: task.owner_id, virtualEvent: 'field_changed' };
-      }
-      return null;
-    }
-    default:
-      return null;
-  }
-}
-
 // ── Debounce buffer ────────────────────────────────────────────────
 
 interface BufferedNotification {
   event: Event;
   task: Task;
-  virtualEvent: NotificationEvent;
+  virtualEvent: VirtualEvent;
 }
 
 interface UserBuffer {
@@ -101,7 +31,7 @@ const buffers = new Map<string, UserBuffer>();
 
 // ── Priority mapping ───────────────────────────────────────────────
 
-const PRIORITY_MAP: Record<NotificationEvent, number> = {
+const PRIORITY_MAP: Record<VirtualEvent, number> = {
   assigned_to_me: 4,
   task_blocked: 4,
   task_completed: 3,
@@ -157,7 +87,7 @@ function formatSingle(item: BufferedNotification): { title: string; message: str
 }
 
 function formatBatch(items: BufferedNotification[]): { title: string; message: string; priority: number } {
-  const counts = new Map<NotificationEvent, number>();
+  const counts = new Map<VirtualEvent, number>();
   let maxPriority = 1;
   for (const item of items) {
     counts.set(item.virtualEvent, (counts.get(item.virtualEvent) || 0) + 1);
@@ -241,31 +171,31 @@ export async function processNotification(
 ): Promise<void> {
   if (!NTFY_URL) return;
 
-  const target = resolveTarget(event, task);
-  if (!target) return;
+  const resolved = resolveEvent(event, task);
+  if (!resolved) return;
 
   const client = await pool.connect();
   try {
-    const subs = await getNotificationSubscriptionsByUserId(client, target.userId);
+    const subs = await getNotificationSubscriptionsByUserId(client, resolved.targetUserId);
     const activeSub = subs.find(
-      (s) => s.active && s.events.includes(target.virtualEvent),
+      (s) => s.active && s.events.includes(resolved.virtualEvent),
     );
     if (!activeSub) return;
 
     const item: BufferedNotification = {
       event,
       task,
-      virtualEvent: target.virtualEvent,
+      virtualEvent: resolved.virtualEvent,
     };
 
-    const existing = buffers.get(target.userId);
+    const existing = buffers.get(resolved.targetUserId);
     if (existing) {
       clearTimeout(existing.timer);
       existing.items.push(item);
-      existing.timer = setTimeout(() => flushBuffer(target.userId), DEBOUNCE_MS);
+      existing.timer = setTimeout(() => flushBuffer(resolved.targetUserId), DEBOUNCE_MS);
     } else {
-      const timer = setTimeout(() => flushBuffer(target.userId), DEBOUNCE_MS);
-      buffers.set(target.userId, {
+      const timer = setTimeout(() => flushBuffer(resolved.targetUserId), DEBOUNCE_MS);
+      buffers.set(resolved.targetUserId, {
         timer,
         items: [item],
         topic: activeSub.topic,
